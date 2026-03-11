@@ -9,14 +9,22 @@
     "anthropic/claude-opus-4-6",
     "anthropic/claude-sonnet-4-5-20250514",
     "anthropic/claude-opus-4-5-20251101",
-    "anthropic/claude-haiku-4-5-20241022"
+    "anthropic/claude-haiku-4-5-20241022",
+    "anthropic/claude-haiku-4-5",
+    "anthropic/claude-opus-4-5",
+    "anthropic/claude-sonnet-4-5",
+    "amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+    "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
+    "openai-codex/gpt-5.4",
+    "openai-codex/gpt-5.3-codex",
+    "openai-codex/gpt-5.2"
   ],
   "skills": [
     "~/.pi/agent/skills",
     "~/.familiar/skills"
   ],
   "packages": [
-    "pi-mcp-adapter",
+    "npm:pi-mcp-adapter",
     "git:github.com/nicobailon/pi-subagents",
     "git:github.com/sweetcheeks72/pi-messenger",
     "git:github.com/nicobailon/pi-coordination",

@@ -9,14 +9,21 @@
     "openai/gpt-4o",
     "openai/gpt-4o-mini",
     "anthropic/claude-sonnet-4-5-20250514",
-    "anthropic/claude-haiku-4-5-20241022"
+    "anthropic/claude-haiku-4-5-20241022",
+    "openai-codex/gpt-5.4",
+    "openai-codex/gpt-5.3-codex",
+    "openai-codex/gpt-5.2-codex",
+    "openai-codex/gpt-5.1",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-6",
+    "anthropic/claude-haiku-4-5"
   ],
   "skills": [
     "~/.pi/agent/skills",
     "~/.familiar/skills"
   ],
   "packages": [
-    "pi-mcp-adapter",
+    "npm:pi-mcp-adapter",
     "git:github.com/nicobailon/pi-subagents",
     "git:github.com/sweetcheeks72/pi-messenger",
     "git:github.com/nicobailon/pi-coordination",

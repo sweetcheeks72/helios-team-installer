@@ -1145,10 +1145,6 @@ main() {
 
   run_verification
   print_quickstart
-  wire_env_to_shell
-  setup_familiar
-  run_verification
-  print_quickstart
 
   # Ensure installer exit trap doesn't print error message on clean exit
   trap - EXIT

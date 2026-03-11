@@ -7,6 +7,19 @@
 
 set -euo pipefail
 
+# ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
+# When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
+# Reopen stdin from /dev/tty so git clone, read, etc. can interact with the user.
+if [[ ! -t 0 ]]; then
+  if [[ -e /dev/tty ]]; then
+    exec < /dev/tty
+  else
+    echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
+    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh)" >&2
+    exit 1
+  fi
+fi
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -101,5 +114,4 @@ echo ""
 # ─── Hand off to full installer ──────────────────────────────────────────────
 echo -e "  ${BOLD}Launching full installer...${RESET}"
 echo ""
-# Ensure stdin comes from terminal (not the curl pipe)
-exec bash "$INSTALLER_DIR/install.sh" "$@" < /dev/tty
+exec bash "$INSTALLER_DIR/install.sh" "$@"

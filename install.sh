@@ -25,7 +25,8 @@ cleanup() {
   # Restore cursor visibility
   printf '\033[?25h'
   if [[ $exit_code -ne 0 ]]; then
-    echo -e "\n${RED}✗ Installer interrupted. Run again to resume (idempotent).${RESET}"
+    # Write to stderr directly — stdout may be a broken tee pipe
+    echo -e "\n\033[0;31m✗ Installer interrupted (exit code $exit_code). Run again to resume (idempotent).\033[0m" >&2
   fi
 }
 trap cleanup EXIT INT TERM
@@ -55,7 +56,16 @@ FAMILIAR_REPO="github.com/sweetcheeks72/familiar"  # NOTE: verify this URL
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
 LOG_FILE="$INSTALLER_DIR/install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+
+# Log to file AND terminal. Best-effort — if tee fails, continue without logging.
+# CRITICAL: Do NOT redirect stderr through tee. If tee/pipe breaks, stderr must
+# still reach the terminal so error messages (including the cleanup trap) are visible.
+if touch "$LOG_FILE" 2>/dev/null; then
+  exec > >(tee -a "$LOG_FILE")
+  # stderr stays on the terminal — cleanup trap errors will always be visible
+else
+  echo -e "${YELLOW}  ⚠ ${RESET}Cannot write to $LOG_FILE — continuing without log file"
+fi
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 print_banner() {

@@ -5,13 +5,15 @@
 ## Quick Start
 
 ```bash
-# One-liner bootstrap (from any machine — no pre-cloning needed)
 curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 ```
 
-Or if you already have the repo cloned:
+Same command to update — it detects existing installs and skips the interactive prompts (provider, API keys). Just pulls latest code, updates extensions, refreshes deps and infrastructure.
+
 ```bash
-bash ~/helios-team-installer/install.sh
+# Or locally:
+bash ~/helios-team-installer/install.sh          # update (non-interactive)
+bash ~/helios-team-installer/install.sh --fresh   # re-run full setup
 ```
 
 📖 **First time?** Read the [full team setup guide](TEAM-SETUP.md) — explains everything from scratch.

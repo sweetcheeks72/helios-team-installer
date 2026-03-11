@@ -1068,10 +1068,11 @@ print_quickstart() {
   echo ""
   echo -e "  ${BOLD}Useful Commands:${RESET}"
   echo -e "    ${DIM}helios${RESET}                  — Launch Helios (branded splash)"
-  echo -e "    ${DIM}pi update${RESET}               — Update all packages"
-  echo -e "    ${DIM}pi --help${RESET}               — Show Pi CLI help"
+  echo -e "    ${DIM}pi${RESET}                      — Start Pi"
+  echo -e "    ${DIM}bash ~/helios-team-installer/install.sh${RESET}  — Update everything"
   echo -e "    ${DIM}bash $INSTALLER_DIR/verify.sh${RESET}   — Run health check"
   echo -e "    ${DIM}bash $INSTALLER_DIR/uninstall.sh${RESET} — Uninstall"
+  echo -e "    ${DIM}bash install.sh --fresh${RESET}  — Re-run full setup (provider, keys)"
   echo ""
   echo -e "  ${BOLD}Troubleshooting:${RESET}  ${DIM}See $INSTALLER_DIR/README.md${RESET}"
   echo ""
@@ -1085,23 +1086,65 @@ print_quickstart() {
   echo ""
 }
 
+# ─── Update Detection ─────────────────────────────────────────────────────────
+# If helios is already installed and configured, skip interactive steps.
+# User can force fresh setup with: bash install.sh --fresh
+detect_update_mode() {
+  UPDATE_MODE=false
+
+  # --fresh flag forces full interactive setup
+  for arg in "$@"; do
+    [[ "$arg" == "--fresh" ]] && return 0
+  done
+
+  # If agent dir exists with a configured provider and .env, this is an update
+  if [[ -d "$PI_AGENT_DIR/.git" ]] && [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
+    local current_provider
+    current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider',''))" 2>/dev/null || echo "")
+    if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]]; then
+      if [[ -f "$PI_AGENT_DIR/.env" ]]; then
+        UPDATE_MODE=true
+        SELECTED_PROVIDER="$current_provider"
+        SELECTED_MODEL=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultModel',''))" 2>/dev/null || echo "")
+        info "Existing install detected (provider: $SELECTED_PROVIDER)"
+        info "Running in update mode — skipping provider/key prompts"
+        info "To re-run full setup: bash install.sh --fresh"
+        echo ""
+      fi
+    fi
+  fi
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
   print_banner
+  detect_update_mode "$@"
   check_prerequisites
   install_pi
   setup_helios_agent
   install_helios_cli
-  select_provider       # Provider BEFORE packages — pi update reads settings.json
+
+  if [[ "$UPDATE_MODE" == false ]]; then
+    select_provider     # Interactive: choose AI provider
+  fi
+
   install_packages
   install_skill_deps    # neo4j-driver, tree-sitter for HEMA
   install_governance_deps  # Governance extension node_modules
   install_git_hooks     # Pre-push hook for branch protection
   setup_dep_allowlist   # npm dependency allowlist
   setup_memgraph        # Docker + Memgraph + schema + 12GB cap
-  setup_ollama          # Ollama + embedding models
+  setup_ollama          # Ollama + embedding models (skips already-pulled)
   setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
-  setup_api_keys
+
+  if [[ "$UPDATE_MODE" == false ]]; then
+    setup_api_keys      # Interactive: prompt for keys
+    wire_env_to_shell   # Add .env sourcing to shell profile
+    setup_familiar      # Interactive: optional Familiar install
+  fi
+
+  run_verification
+  print_quickstart
   wire_env_to_shell
   setup_familiar
   run_verification

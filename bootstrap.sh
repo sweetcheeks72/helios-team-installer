@@ -101,4 +101,4 @@ echo ""
 # ─── Hand off to full installer ──────────────────────────────────────────────
 echo -e "  ${BOLD}Launching full installer...${RESET}"
 echo ""
-exec bash "$INSTALLER_DIR/install.sh"
+exec bash "$INSTALLER_DIR/install.sh" "$@"

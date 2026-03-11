@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Helios Team Installer — Adversarial Audit Report</title>
+<style>
+  :root { --bg: #0d1117; --card: #161b22; --border: #30363d; --text: #c9d1d9; --muted: #8b949e; --red: #f85149; --orange: #d29922; --yellow: #e3b341; --green: #3fb950; --blue: #58a6ff; --purple: #bc8cff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); padding: 2rem; line-height: 1.6; }
+  .container { max-width: 960px; margin: 0 auto; }
+  h1 { color: #fff; font-size: 1.8rem; margin-bottom: 0.5rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: 0.95rem; }
+  .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
+  .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
+  .summary-card .count { font-size: 2rem; font-weight: 700; }
+  .summary-card .label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .critical .count { color: var(--red); }
+  .high .count { color: var(--orange); }
+  .medium .count { color: var(--yellow); }
+  .low .count { color: var(--green); }
+  .issue { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; border-left: 4px solid var(--border); }
+  .issue.sev-critical { border-left-color: var(--red); }
+  .issue.sev-high { border-left-color: var(--orange); }
+  .issue.sev-medium { border-left-color: var(--yellow); }
+  .issue.sev-low { border-left-color: var(--green); }
+  .issue.sev-nit { border-left-color: var(--purple); }
+  .issue-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .badge-critical { background: rgba(248,81,73,0.2); color: var(--red); }
+  .badge-high { background: rgba(210,153,34,0.2); color: var(--orange); }
+  .badge-medium { background: rgba(227,179,65,0.2); color: var(--yellow); }
+  .badge-low { background: rgba(63,185,80,0.2); color: var(--green); }
+  .badge-nit { background: rgba(188,140,255,0.2); color: var(--purple); }
+  .issue-title { font-weight: 600; color: #fff; }
+  .issue-file { color: var(--blue); font-size: 0.85rem; font-family: monospace; }
+  .issue-body { color: var(--text); font-size: 0.9rem; margin-top: 0.5rem; }
+  .issue-body code { background: rgba(110,118,129,0.2); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; color: var(--blue); }
+  .issue-body pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; margin: 0.5rem 0; overflow-x: auto; font-size: 0.82rem; color: var(--text); }
+  .fix { color: var(--green); font-weight: 500; margin-top: 0.5rem; }
+  .section-header { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 2rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+  .meta { display: flex; gap: 2rem; margin-bottom: 2rem; color: var(--muted); font-size: 0.85rem; }
+  .meta span { display: flex; align-items: center; gap: 0.3rem; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>☀ Helios Team Installer — Adversarial Audit</h1>
+<p class="subtitle">Reviewed: install.sh · verify.sh · uninstall.sh · bootstrap.sh · README.md · TEAM-SETUP.md · .env.template · provider-configs/*.json · sync-from-agent.sh · .github/workflows/*</p>
+<div class="meta">
+  <span>📅 2026-03-11</span>
+  <span>📁 sweetcheeks72/helios-team-installer</span>
+  <span>🔍 Assumption: overzealous junior / 2019-era LLM</span>
+</div>
+
+<div class="summary-grid">
+  <div class="summary-card critical"><div class="count">2</div><div class="label">Critical</div></div>
+  <div class="summary-card high"><div class="count">6</div><div class="label">High</div></div>
+  <div class="summary-card medium"><div class="count">6</div><div class="label">Medium</div></div>
+  <div class="summary-card low"><div class="count">4</div><div class="label">Low / Nit</div></div>
+</div>
+
+<!-- ═══ CRITICAL ═══ -->
+<div class="section-header">🔴 Critical</div>
+
+<div class="issue sev-critical">
+  <div class="issue-header">
+    <span class="badge badge-critical">Critical</span>
+    <span class="issue-title">Orphan spinner process on Ctrl+C — terminal corruption</span>
+    <span class="issue-file">install.sh:10,80-95</span>
+  </div>
+  <div class="issue-body">
+    The <code>start_spinner()</code> function spawns a <code>while true</code> background process and <code>disown</code>s it. The top-level EXIT trap only prints "Installer interrupted" — it does NOT call <code>stop_spinner()</code>. When a user hits Ctrl+C during a spinner, the main script exits but the spinner process keeps running forever, printing escape codes to the terminal. The user sees garbled output and must <code>kill %1</code> or close the terminal.
+    <pre>trap 'echo -e "\n${RED}✗ Installer interrupted..."' EXIT  # ← never kills spinner
+start_spinner() {
+  ...
+  done &amp;
+  spin_pid=$!
+  disown "$spin_pid"  # ← now unkillable by parent trap</pre>
+    <div class="fix">Fix: Replace the EXIT trap with a cleanup function that kills spin_pid, restores cursor, then prints the interrupt message.</div>
+  </div>
+</div>
+
+<div class="issue sev-critical">
+  <div class="issue-header">
+    <span class="badge badge-critical">Critical</span>
+    <span class="issue-title">.env file created with world-readable permissions (0644)</span>
+    <span class="issue-file">install.sh:setup_api_keys()</span>
+  </div>
+  <div class="issue-body">
+    API keys (ANTHROPIC_API_KEY, AWS credentials, etc.) are written to <code>~/.pi/agent/.env</code> with default <code>umask</code> permissions — typically 0644. Any user on the system can read it. On shared dev servers or multi-user Macs, this leaks credentials.
+    <pre>cp "$env_template" "$env_file"   # ← inherits default perms (644)
+# No chmod 600 anywhere</pre>
+    <div class="fix">Fix: Add <code>chmod 600 "$env_file"</code> immediately after creating/copying the .env file. Also add to verify.sh as a check.</div>
+  </div>
+</div>
+
+<!-- ═══ HIGH ═══ -->
+<div class="section-header">🟡 High</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">Provider configs missing <code>quietStartup: true</code> — fresh installs get no Helios splash</span>
+    <span class="issue-file">provider-configs/*.json</span>
+  </div>
+  <div class="issue-body">
+    We just added <code>quietStartup: true</code> to helios-agent's settings.json to suppress Pi's raw verbose listing (replaced by the Helios branded splash in <code>bin/helios</code>). But the 3 provider config templates <strong>don't have this key</strong>. On a fresh install (no existing settings.json), the template is copied directly — so the user gets Pi's raw dump AND the Helios splash fighting each other.
+    <div class="fix">Fix: Add <code>"quietStartup": true</code> to all 3 provider-configs/*.json files.</div>
+  </div>
+</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">Private repo clone fails without auth for Familiar</span>
+    <span class="issue-file">install.sh:setup_familiar(), line ~676</span>
+  </div>
+  <div class="issue-body">
+    <code>git clone "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR"</code> uses HTTPS without authentication. If <code>sweetcheeks72/familiar</code> is private (which it is — team invite required), this fails with "Authentication failed" unless the user has macOS Keychain or <code>git credential-manager</code> configured. The error message says "check the URL and your GitHub access" but doesn't suggest <code>GITHUB_TOKEN</code> in the URL.
+    <div class="fix">Fix: If GITHUB_TOKEN is set, use <code>https://${GITHUB_TOKEN}@github.com/...</code> for private repos. Or detect the auth failure and suggest credential setup.</div>
+  </div>
+</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">uninstall.sh doesn't remove helios CLI symlinks</span>
+    <span class="issue-file">uninstall.sh</span>
+  </div>
+  <div class="issue-body">
+    The uninstall script removes <code>~/.pi/agent</code>, Pi CLI, and <code>~/.familiar</code>, but never removes the <code>helios</code> symlinks at <code>/usr/local/bin/helios</code> or <code>~/.local/bin/helios</code>. After uninstall, typing <code>helios</code> gives a broken symlink error pointing to a deleted file.
+    <div class="fix">Fix: Add a step to remove helios symlinks before removing ~/.pi/agent (which deletes the target).</div>
+  </div>
+</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">verify.sh <code>pi --version</code> captures extension error, not version</span>
+    <span class="issue-file">verify.sh:43</span>
+  </div>
+  <div class="issue-body">
+    <code>pi_ver=$(pi --version 2>/dev/null | head -1)</code> captures the first line of stdout. But <code>pi --version</code> currently outputs an extension parse error on line 1 and the actual version on the last line:
+    <pre>Failed to load extension ".../helios-governance/index.ts": ...   ← head -1 captures THIS
+0.57.0   ← this is the actual version</pre>
+    The verify report shows "pi binary: Failed to load extension..." which is confusing.
+    <div class="fix">Fix: Use <code>tail -1</code> instead of <code>head -1</code>.</div>
+  </div>
+</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">verify.sh and uninstall.sh say "run: pi" not "run: helios"</span>
+    <span class="issue-file">verify.sh:last line, uninstall.sh:~140</span>
+  </div>
+  <div class="issue-body">
+    After we branded the CLI as <code>helios</code>, these files still reference <code>pi</code> as the primary command. The verify.sh "System healthy" message says <code>Run: pi</code>. The uninstall.sh "To reinstall" message says <code>bash ~/helios-team-installer/install.sh</code> (that's OK) but the verify report card should mention <code>helios</code>.
+    <div class="fix">Fix: Update verify.sh healthy message and README quick-start references.</div>
+  </div>
+</div>
+
+<div class="issue sev-high">
+  <div class="issue-header">
+    <span class="badge badge-high">High</span>
+    <span class="issue-title">skills-hook package format mismatch vs helios-agent</span>
+    <span class="issue-file">provider-configs/*.json</span>
+  </div>
+  <div class="issue-body">
+    Provider configs list skills-hook as a plain string: <code>"git:github.com/nicobailon/skills-hook"</code>. But helios-agent's settings.json uses the object form: <code>{"source": "git:github.com/nicobailon/skills-hook", "skills": []}</code>. The merge logic in <code>select_provider()</code> does a <code>pkg_key()</code> comparison that treats these as different entries — resulting in DUPLICATE skills-hook packages after merge.
+    <div class="fix">Fix: Use the object form <code>{"source": "...", "skills": []}</code> in all 3 provider configs.</div>
+  </div>
+</div>
+
+<!-- ═══ MEDIUM ═══ -->
+<div class="section-header">🟠 Medium</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">README "Idempotent Design" section lies about settings.json</span>
+    <span class="issue-file">README.md:Idempotent Design section</span>
+  </div>
+  <div class="issue-body">
+    README says: "Existing settings.json → overwritten with selected provider config." This is WRONG — the installer now does a Python-based merge that preserves existing keys. The stale documentation makes users think re-running will nuke their config, discouraging idempotent usage.
+    <div class="fix">Fix: Update to say "Existing settings.json → merged (provider/model updated, packages preserved)".</div>
+  </div>
+</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">Wire_env_to_shell exports ALL env vars globally</span>
+    <span class="issue-file">install.sh:wire_env_to_shell()</span>
+  </div>
+  <div class="issue-body">
+    The sourcing line added to shell profile is: <code>set -a && source ~/.pi/agent/.env && set +a</code>. This exports EVERY variable in .env (including <code>MEMGRAPH_HOST=127.0.0.1</code>, <code>MEMGRAPH_PORT=7687</code>, <code>OLLAMA_URL</code>) into the shell environment for ALL commands. Could conflict with other tools that use these env vars.
+    <div class="fix">Fix: Only export API key variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) or use <code>grep '^[A-Z]*_API_KEY\|^AWS_' .env | while read</code>.</div>
+  </div>
+</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">python3 dependency is silent — installer breaks on systems without it</span>
+    <span class="issue-file">install.sh:select_provider(), verify.sh:multiple</span>
+  </div>
+  <div class="issue-body">
+    The <code>select_provider()</code> function uses a <code>python3 -c "..."</code> block to merge JSON. <code>verify.sh</code> uses python3 to read settings.json. But python3 is NOT checked in <code>check_prerequisites()</code>. On minimal installs or Docker containers, python3 may not exist. The fallback (<code>cp template</code>) loses ALL existing config.
+    <div class="fix">Fix: Either add python3 to prerequisites, or use <code>node -e</code> (already guaranteed since Pi requires Node), or add a robust jq/node fallback.</div>
+  </div>
+</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">GitHub Action sync workflow doesn't sync extensions or quietStartup</span>
+    <span class="issue-file">.github/workflows/sync-from-agent.yml</span>
+  </div>
+  <div class="issue-body">
+    The CI sync workflow only copies <code>packages</code> and <code>skills</code> from helios-agent's settings.json to provider configs. It does NOT sync <code>extensions</code>, <code>quietStartup</code>, <code>enabledModels</code> (for non-matching providers), or any new top-level keys. Provider configs will drift out of sync for these fields.
+    <div class="fix">Fix: Sync all non-provider-specific keys (extensions, quietStartup, enableSkillCommands, etc.).</div>
+  </div>
+</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">docker compose v2 assumed — v1 users get "command not found"</span>
+    <span class="issue-file">install.sh:setup_memgraph()</span>
+  </div>
+  <div class="issue-body">
+    <code>docker compose up -d</code> requires Docker Compose v2 (the plugin). Users with older Docker installs only have <code>docker-compose</code> (v1, standalone). The installer doesn't check which is available.
+    <div class="fix">Fix: Check for <code>docker compose</code> first, fall back to <code>docker-compose</code>.</div>
+  </div>
+</div>
+
+<div class="issue sev-medium">
+  <div class="issue-header">
+    <span class="badge badge-medium">Medium</span>
+    <span class="issue-title">TEAM-SETUP.md and README.md still say "type <code>pi</code>" as primary command</span>
+    <span class="issue-file">TEAM-SETUP.md:line 32, README.md:multiple</span>
+  </div>
+  <div class="issue-body">
+    TEAM-SETUP.md says "type <code>pi</code> — you now have an AI orchestrator." README says "Run: <code>pi</code>". The manual setup section, troubleshooting section, and architecture diagram all reference <code>pi</code> as the primary launch command. After helios CLI branding, these should lead with <code>helios</code>.
+    <div class="fix">Fix: Update both docs to show <code>helios</code> as primary, <code>pi</code> as the underlying engine.</div>
+  </div>
+</div>
+
+<!-- ═══ LOW / NIT ═══ -->
+<div class="section-header">🟢 Low / Nit</div>
+
+<div class="issue sev-low">
+  <div class="issue-header">
+    <span class="badge badge-low">Low</span>
+    <span class="issue-title">Ollama install.sh URL uses ollama.ai — may redirect/break</span>
+    <span class="issue-file">install.sh:setup_ollama()</span>
+  </div>
+  <div class="issue-body">
+    <code>curl -fsSL https://ollama.ai/install.sh | sh</code> — Ollama's official domain is now <code>ollama.com</code>. The <code>.ai</code> domain may redirect. If the redirect breaks, the install silently fails.
+    <div class="fix">Fix: Use <code>https://ollama.com/install.sh</code>.</div>
+  </div>
+</div>
+
+<div class="issue sev-low">
+  <div class="issue-header">
+    <span class="badge badge-low">Low</span>
+    <span class="issue-title">README "Files in This Repo" section is incomplete</span>
+    <span class="issue-file">README.md</span>
+  </div>
+  <div class="issue-body">
+    The file tree in README shows install.sh, verify.sh, uninstall.sh, .env.template, provider-configs/, README.md. Missing: bootstrap.sh, sync-from-agent.sh, TEAM-SETUP.md, .github/workflows/.
+    <div class="fix">Fix: Update the file tree to include all files.</div>
+  </div>
+</div>
+
+<div class="issue sev-nit">
+  <div class="issue-header">
+    <span class="badge badge-nit">Nit</span>
+    <span class="issue-title">uninstall.sh glob in file existence check</span>
+    <span class="issue-file">uninstall.sh:~148</span>
+  </div>
+  <div class="issue-body">
+    <code>if [[ -f "$HOME/.pi-agent-env.backup."* ]] 2>/dev/null</code> — the glob inside <code>[[ -f ]]</code> doesn't expand properly in bash. It checks for a literal file named <code>*.backup.*</code>. This check always returns false.
+    <div class="fix">Fix: Use <code>ls "$HOME"/.pi-agent-env.backup.* &>/dev/null</code> instead.</div>
+  </div>
+</div>
+
+<div class="issue sev-nit">
+  <div class="issue-header">
+    <span class="badge badge-nit">Nit</span>
+    <span class="issue-title">Anthropic provider config model ID is non-standard</span>
+    <span class="issue-file">provider-configs/anthropic.json</span>
+  </div>
+  <div class="issue-body">
+    Default model is <code>claude-sonnet-4-5-20250514</code> (with date suffix) but other configs use <code>claude-opus-4-6</code> without dates. Pi may not resolve the dated version string. All 3 configs should use consistent model ID formats.
+    <div class="fix">Fix: Standardize to either always-dated or never-dated model IDs.</div>
+  </div>
+</div>
+
+<hr style="border-color: var(--border); margin: 2rem 0;">
+<p style="color: var(--muted); font-size: 0.85rem; text-align: center;">
+  Generated by Helios Adversarial Review · 18 issues across 10 files · 2026-03-11
+</p>
+
+</div>
+</body>
+</html>

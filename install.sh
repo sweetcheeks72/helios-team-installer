@@ -408,6 +408,7 @@ existing['extensions'] = existing_exts
 # Ensure other required keys
 existing.setdefault('enableSkillCommands', True)
 existing.setdefault('hideThinkingBlock', False)
+existing['quietStartup'] = existing.get('quietStartup', template.get('quietStartup', True))
 
 with open('$PI_AGENT_DIR/settings.json', 'w') as f:
     json.dump(existing, f, indent=2)

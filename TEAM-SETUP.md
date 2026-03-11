@@ -155,7 +155,7 @@ bash ~/helios-team-installer/verify.sh
 cd ~/your-project
 
 # Start Helios
-pi
+helios
 ```
 
 That's it. You're now in a Helios session. Try these:

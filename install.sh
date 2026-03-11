@@ -7,6 +7,14 @@
 # =============================================================================
 
 set -euo pipefail
+
+# ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
+# When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
+# Reopen stdin from /dev/tty so interactive `read` commands work.
+if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
+  exec < /dev/tty
+fi
+
 cleanup() {
   local exit_code=$?
   # Kill any leftover spinner
@@ -1106,13 +1114,26 @@ detect_update_mode() {
 
   # If agent dir exists with a configured provider and .env, this is an update
   if [[ -d "$PI_AGENT_DIR/.git" ]] && [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
-    local current_provider
-    current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider',''))" 2>/dev/null || echo "")
-    if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]]; then
+    local current_provider=""
+    local current_model=""
+
+    # Try python3 first, fall back to node, fall back to grep
+    if command -v python3 &>/dev/null; then
+      current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider',''))" 2>/dev/null || echo "")
+      current_model=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultModel',''))" 2>/dev/null || echo "")
+    elif command -v node &>/dev/null; then
+      current_provider=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'')" 2>/dev/null || echo "")
+      current_model=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultModel||'')" 2>/dev/null || echo "")
+    else
+      # Last resort: grep for the key (handles simple cases)
+      current_provider=$(grep -o '"defaultProvider"[[:space:]]*:[[:space:]]*"[^"]*"' "$PI_AGENT_DIR/settings.json" 2>/dev/null | head -1 | sed 's/.*: *"//;s/"//' || echo "")
+    fi
+
+    if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]] && [[ "$current_provider" != "undefined" ]]; then
       if [[ -f "$PI_AGENT_DIR/.env" ]]; then
         UPDATE_MODE=true
         SELECTED_PROVIDER="$current_provider"
-        SELECTED_MODEL=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultModel',''))" 2>/dev/null || echo "")
+        SELECTED_MODEL="${current_model:-}"
         info "Existing install detected (provider: $SELECTED_PROVIDER)"
         info "Running in update mode — skipping provider/key prompts"
         info "To re-run full setup: bash install.sh --fresh"

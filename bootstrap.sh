@@ -101,4 +101,5 @@ echo ""
 # ─── Hand off to full installer ──────────────────────────────────────────────
 echo -e "  ${BOLD}Launching full installer...${RESET}"
 echo ""
-exec bash "$INSTALLER_DIR/install.sh" "$@"
+# Ensure stdin comes from terminal (not the curl pipe)
+exec bash "$INSTALLER_DIR/install.sh" "$@" < /dev/tty

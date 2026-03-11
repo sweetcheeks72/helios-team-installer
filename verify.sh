@@ -150,6 +150,7 @@ if [[ -d "$PI_AGENT_DIR/extensions" ]]; then
   # Check each required extension by name
   required_exts=(
     "helios-governance:dir"
+    "auto-update.ts:file"
     "codebase-index.ts:file"
     "mcp-startup-visibility.ts:file"
     "subagent-inline-enforce.ts:file"

@@ -63,6 +63,7 @@
     "~/.pi/agent/extensions/codebase-index.ts",
     "~/.pi/agent/extensions/mcp-startup-visibility.ts",
     "~/.pi/agent/extensions/subagent-inline-enforce.ts",
-    "~/.pi/agent/extensions/subagent-mesh.ts"
+    "~/.pi/agent/extensions/subagent-mesh.ts",
+    "~/.pi/agent/extensions/auto-update.ts"
   ]
 }

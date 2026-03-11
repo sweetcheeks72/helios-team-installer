@@ -363,8 +363,50 @@ fi
 if [[ -f "$PI_AGENT_DIR/mcp.json" ]]; then
   mcp_count=$(python3 -c "import json;d=json.load(open('$PI_AGENT_DIR/mcp.json'));print(len(d.get('mcpServers',{})))" 2>/dev/null || echo "0")
   check_pass "mcp.json: $mcp_count server(s) configured"
+  # Verify specific servers
+  for server in memgraph github figma-remote; do
+    if python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/mcp.json')); assert '$server' in d.get('mcpServers',{})" 2>/dev/null; then
+      check_pass "  → $server server configured"
+    else
+      check_warn "  → $server server missing from mcp.json"
+    fi
+  done
 else
   check_warn "mcp.json not found"
+fi
+
+# ─── 12. Git Hooks ───────────────────────────────────────────────────────────
+section "12. Git Hooks & Allowlists"
+
+if [[ -f "$PI_AGENT_DIR/.git/hooks/pre-push" ]]; then
+  check_pass "pre-push hook installed"
+else
+  check_warn "pre-push hook missing — agents can push to main unchecked"
+fi
+
+if [[ -f "$PI_AGENT_DIR/dep-allowlist.json" ]]; then
+  if python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/dep-allowlist.json')); assert 'neo4j-driver' in d.get('packages',[])" 2>/dev/null; then
+    check_pass "dep-allowlist.json (neo4j-driver allowed)"
+  else
+    check_warn "dep-allowlist.json missing neo4j-driver entry"
+  fi
+else
+  check_warn "dep-allowlist.json not found"
+fi
+
+# ─── 13. Governance Extension ────────────────────────────────────────────────
+section "13. Governance Extension"
+
+gov_dir="$PI_AGENT_DIR/extensions/helios-governance"
+if [[ -d "$gov_dir" ]]; then
+  check_pass "Governance extension present"
+  if [[ -d "$gov_dir/node_modules" ]]; then
+    check_pass "Governance node_modules installed"
+  else
+    check_warn "Governance node_modules missing — run: cd $gov_dir && npm install"
+  fi
+else
+  check_warn "Governance extension not found"
 fi
 
 # ─── Report Card ──────────────────────────────────────────────────────────────

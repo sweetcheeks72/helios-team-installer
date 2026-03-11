@@ -139,6 +139,16 @@ check_prerequisites() {
     warn "curl not found — some features may be limited"
   fi
 
+  # python3 (required for JSON merging)
+  if command -v python3 &>/dev/null; then
+    success "python3 $(python3 --version 2>/dev/null | awk '{print $2}') ✓"
+  else
+    error "python3 not found — required for configuration"
+    echo -e "    ${DIM}macOS: xcode-select --install${RESET}"
+    echo -e "    ${DIM}Linux: apt install python3 / brew install python3${RESET}"
+    missing+=("python3")
+  fi
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo ""
     error "Missing required prerequisites: ${missing[*]}"
@@ -393,9 +403,9 @@ with open('$PI_AGENT_DIR/settings.json', 'w') as f:
 
 print('Merged provider config into existing settings.json')
 " || {
-      # Fallback if python3 fails: just copy the template
-      warn "python3 merge failed — falling back to template copy"
-      cp "$PROVIDER_CONFIG" "$PI_AGENT_DIR/settings.json"
+      error "python3 JSON merge failed — settings.json NOT overwritten"
+      warn "Run 'python3 --version' to check your Python installation"
+      warn "You may need to manually edit ~/.pi/agent/settings.json"
     }
   else
     # No existing settings.json — use template as-is
@@ -414,12 +424,103 @@ install_skill_deps() {
     return 0
   fi
 
-  if [[ -d "$sg_dir/node_modules/neo4j-driver" ]]; then
-    success "neo4j-driver already installed"
+  if [[ -d "$sg_dir/node_modules/neo4j-driver" ]] && [[ -d "$sg_dir/node_modules/tree-sitter" ]]; then
+    success "neo4j-driver + tree-sitter already installed"
   else
     run_with_spinner "Installing neo4j-driver + tree-sitter" \
       bash -c "cd '$sg_dir' && npm install --legacy-peer-deps --no-audit --no-fund" || \
-      warn "Dependency install failed — HEMA memory will be limited"
+      warn "Dependency install failed — HEMA memory and code parsing will be limited"
+  fi
+}
+
+# ─── Governance Extension Dependencies ────────────────────────────────────────
+install_governance_deps() {
+  step "Governance Extension Dependencies"
+
+  local gov_dir="$PI_AGENT_DIR/extensions/helios-governance"
+  if [[ ! -d "$gov_dir" ]] || [[ ! -f "$gov_dir/tsconfig.json" ]]; then
+    info "Governance extension not found — skipping"
+    return 0
+  fi
+
+  if [[ -d "$gov_dir/node_modules" ]]; then
+    success "Governance deps already installed"
+  else
+    run_with_spinner "Installing governance extension deps" \
+      bash -c "cd '$gov_dir' && npm install --no-audit --no-fund" || \
+      warn "Governance deps failed — extension may not load"
+  fi
+}
+
+# ─── Git Hooks ────────────────────────────────────────────────────────────────
+install_git_hooks() {
+  step "Git Hooks"
+
+  local hooks_dir="$PI_AGENT_DIR/.git/hooks"
+  if [[ ! -d "$hooks_dir" ]]; then
+    info "No .git/hooks directory — skipping"
+    return 0
+  fi
+
+  # Pre-push hook (blocks accidental pushes to main from agents)
+  local hook_src="$PI_AGENT_DIR/hooks/pre-push"
+  if [[ -f "$hook_src" ]]; then
+    cp "$hook_src" "$hooks_dir/pre-push"
+    chmod +x "$hooks_dir/pre-push"
+    success "pre-push hook installed"
+  elif [[ -f "$hooks_dir/pre-push" ]]; then
+    success "pre-push hook already present"
+  else
+    # Create a minimal pre-push hook
+    cat > "$hooks_dir/pre-push" << 'HOOK'
+#!/bin/bash
+# Helios pre-push hook: block agent pushes to protected branches
+remote="$1"
+while read local_ref local_sha remote_ref remote_sha; do
+  if echo "$remote_ref" | grep -qE "refs/heads/(main|master)$"; then
+    if [ -n "$PI_AGENT" ] || [ -n "$HELIOS_WORKER" ]; then
+      echo "🚫 BLOCKED: Push to protected branch is not allowed."
+      echo "   Use a feature branch and open a PR instead."
+      echo "   To override: git push --no-verify"
+      exit 1
+    fi
+  fi
+done
+HOOK
+    chmod +x "$hooks_dir/pre-push"
+    success "pre-push hook created"
+  fi
+}
+
+# ─── Dep Allowlist ────────────────────────────────────────────────────────────
+setup_dep_allowlist() {
+  step "Dependency Allowlist"
+
+  local allowlist="$PI_AGENT_DIR/dep-allowlist.json"
+  if [[ -f "$allowlist" ]]; then
+    # Verify it contains neo4j-driver
+    if python3 -c "
+import json
+with open('$allowlist') as f:
+    data = json.load(f)
+pkgs = data.get('packages', [])
+if 'neo4j-driver' not in pkgs:
+    pkgs.append('neo4j-driver')
+    data['packages'] = pkgs
+    with open('$allowlist', 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+    print('added')
+else:
+    print('ok')
+" 2>/dev/null; then
+      success "dep-allowlist.json verified"
+    else
+      warn "Could not verify dep-allowlist.json"
+    fi
+  else
+    echo '{"packages": ["neo4j-driver", "neo4j"]}' > "$allowlist"
+    success "dep-allowlist.json created"
   fi
 }
 
@@ -524,9 +625,18 @@ setup_ollama() {
   # Ensure Ollama is running
   if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
     info "Starting Ollama..."
-    ollama serve >> "$LOG_FILE" 2>&1 &
-    sleep 3
-    if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+    nohup ollama serve >> "$LOG_FILE" 2>&1 &
+    disown 2>/dev/null || true
+    # Wait with retry loop (up to 15s)
+    local ollama_ready=false
+    for i in {1..15}; do
+      if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+        ollama_ready=true
+        break
+      fi
+      sleep 1
+    done
+    if [[ "$ollama_ready" = true ]]; then
       success "Ollama running"
     else
       warn "Ollama not responding — you may need to start it manually"
@@ -579,8 +689,68 @@ setup_mcp_servers() {
     warn "npx not found — GitHub MCP server unavailable"
   fi
 
-  # Figma MCP (informational — needs token)
-  info "Figma MCP available if FIGMA_MCP_TOKEN is set in .env"
+  # Write mcp.json with all 3 servers
+  local mcp_file="$PI_AGENT_DIR/mcp.json"
+  if [[ -f "$mcp_file" ]]; then
+    local server_count
+    server_count=$(python3 -c "import json; print(len(json.load(open('$mcp_file')).get('mcpServers',{})))" 2>/dev/null || echo "0")
+    if [[ "$server_count" -ge 3 ]]; then
+      success "mcp.json configured ($server_count servers)"
+    else
+      info "mcp.json has $server_count servers — updating"
+      _write_mcp_json "$mcp_file"
+    fi
+  else
+    _write_mcp_json "$mcp_file"
+  fi
+}
+
+_write_mcp_json() {
+  local mcp_file="$1"
+  python3 -c "
+import json, os
+target = '$mcp_file'
+servers = {
+    'figma-remote': {
+        'transport': 'http',
+        'url': 'https://mcp.figma.com/mcp',
+        'auth': 'bearer',
+        'bearerTokenEnv': 'FIGMA_MCP_TOKEN',
+        'lifecycle': 'lazy'
+    },
+    'memgraph': {
+        'command': 'uvx',
+        'args': ['--from', 'mcp-memgraph', 'mcp-memgraph'],
+        'env': {
+            'MEMGRAPH_URL': 'bolt://127.0.0.1:7687',
+            'MEMGRAPH_USER': 'memgraph',
+            'MEMGRAPH_PASSWORD': 'memgraph',
+            'MEMGRAPH_DATABASE': 'memgraph',
+            'MCP_READ_ONLY': 'no'
+        },
+        'lifecycle': 'eager',
+        'idleTimeout': 300
+    },
+    'github': {
+        'command': 'npx',
+        'args': ['-y', '@modelcontextprotocol/server-github'],
+        'env': {
+            'GITHUB_PERSONAL_ACCESS_TOKEN': '\${GITHUB_TOKEN}'
+        }
+    }
+}
+mcp = {'mcpServers': servers}
+if os.path.exists(target):
+    try:
+        with open(target) as f:
+            existing = json.load(f)
+        existing.setdefault('mcpServers', {}).update(servers)
+        mcp = existing
+    except: pass
+with open(target, 'w') as f:
+    json.dump(mcp, f, indent=2)
+    f.write('\n')
+" 2>/dev/null && success "mcp.json written (figma-remote, memgraph, github)" || warn "Could not write mcp.json"
 }
 
 # ─── API Key Setup ────────────────────────────────────────────────────────────
@@ -896,9 +1066,12 @@ main() {
   select_provider       # Provider BEFORE packages — pi update reads settings.json
   install_packages
   install_skill_deps    # neo4j-driver, tree-sitter for HEMA
-  setup_memgraph        # Docker + Memgraph + schema
+  install_governance_deps  # Governance extension node_modules
+  install_git_hooks     # Pre-push hook for branch protection
+  setup_dep_allowlist   # npm dependency allowlist
+  setup_memgraph        # Docker + Memgraph + schema + 12GB cap
   setup_ollama          # Ollama + embedding models
-  setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP
+  setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
   setup_api_keys
   wire_env_to_shell
   setup_familiar

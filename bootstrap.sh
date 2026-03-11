@@ -67,6 +67,13 @@ else
   fail=true
 fi
 
+if command -v python3 &>/dev/null; then
+  echo -e "  ${GREEN}✓${RESET} python3 $(python3 --version 2>/dev/null | awk '{print $2}')"
+else
+  echo -e "  ${RED}✗${RESET} python3 not found — install with: xcode-select --install (macOS) or apt install python3"
+  fail=true
+fi
+
 if [ "$fail" = true ]; then
   echo ""
   echo -e "  ${RED}${BOLD}✗ Missing prerequisites. Install them and try again.${RESET}"

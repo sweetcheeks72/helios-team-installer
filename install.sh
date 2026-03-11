@@ -163,13 +163,40 @@ install_pi() {
   fi
 
   info "Pi not found — installing via npm..."
+  
+  # Pre-flight: fix npm cache permissions (common macOS issue when npm was run with sudo)
+  if [[ -d "$HOME/.npm" ]]; then
+    if ! npm cache verify >> "$LOG_FILE" 2>&1; then
+      warn "npm cache issue detected — repairing..."
+      sudo chown -R "$(whoami)" "$HOME/.npm" 2>/dev/null || true
+      npm cache clean --force >> "$LOG_FILE" 2>&1 || true
+    fi
+  fi
+  
   if run_with_spinner "Installing Pi CLI (@mariozechner/pi-coding-agent)" \
       npm install -g @mariozechner/pi-coding-agent; then
     PI_INSTALLED=true
-    success "Pi installed: $(pi --version 2>/dev/null | head -1 || echo 'ok')"
+    success "Pi installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
   else
-    error "Failed to install Pi. Try manually: npm install -g @mariozechner/pi-coding-agent"
-    exit 1
+    # Retry with full cache nuke
+    warn "First attempt failed — clearing npm cache and retrying..."
+    sudo chown -R "$(whoami)" "$HOME/.npm" 2>/dev/null || true
+    npm cache clean --force >> "$LOG_FILE" 2>&1 || true
+    
+    if run_with_spinner "Retrying Pi CLI install" \
+        npm install -g @mariozechner/pi-coding-agent; then
+      PI_INSTALLED=true
+      success "Pi installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
+    else
+      error "Failed to install Pi CLI."
+      echo ""
+      echo -e "  ${BOLD}Manual fix:${RESET}"
+      echo -e "    ${DIM}sudo chown -R \$(whoami) ~/.npm${RESET}"
+      echo -e "    ${DIM}npm cache clean --force${RESET}"
+      echo -e "    ${DIM}npm install -g @mariozechner/pi-coding-agent${RESET}"
+      echo -e "    Then re-run: ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
+      exit 1
+    fi
   fi
 }
 
@@ -196,6 +223,43 @@ setup_helios_agent() {
   run_with_spinner "Cloning helios-agent → ~/.pi/agent/" \
     git clone "https://$HELIOS_AGENT_REPO.git" "$PI_AGENT_DIR"
   success "Helios agent cloned to $PI_AGENT_DIR"
+}
+
+# ─── Helios CLI Command ──────────────────────────────────────────────────────
+install_helios_cli() {
+  step "Helios CLI"
+
+  local helios_bin="$PI_AGENT_DIR/bin/helios"
+  if [[ ! -f "$helios_bin" ]]; then
+    info "bin/helios not found in agent repo — skipping CLI install"
+    return 0
+  fi
+
+  chmod +x "$helios_bin"
+  local installed=false
+
+  # Try /usr/local/bin first
+  if [[ -w /usr/local/bin ]]; then
+    ln -sfn "$helios_bin" /usr/local/bin/helios
+    success "helios → /usr/local/bin/helios"
+    installed=true
+  elif sudo -n true 2>/dev/null; then
+    sudo ln -sfn "$helios_bin" /usr/local/bin/helios
+    success "helios → /usr/local/bin/helios"
+    installed=true
+  fi
+
+  # Also install to ~/.local/bin
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
+  if [[ "$installed" == false ]]; then
+    success "helios → ~/.local/bin/helios"
+    if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
+      warn "Add to your shell config: export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+  fi
+
+  success "Type 'helios' to launch (branded pi wrapper)"
 }
 
 # ─── Pi Update (Install Packages) ─────────────────────────────────────────────
@@ -791,7 +855,7 @@ print_quickstart() {
   echo -e "       ${DIM}cd /path/to/your/project${RESET}"
   echo ""
   echo -e "    ${CYAN}2.${RESET} Start Helios:"
-  echo -e "       ${DIM}pi${RESET}"
+  echo -e "       ${DIM}helios${RESET}"
   echo ""
   echo -e "    ${CYAN}3.${RESET} Try a task:"
   echo -e "       ${DIM}\"Review my code and create a PR\"${RESET}"
@@ -804,6 +868,7 @@ print_quickstart() {
   echo -e "    ${DIM}~/.pi/agent/skills/${RESET}        — Skill definitions"
   echo ""
   echo -e "  ${BOLD}Useful Commands:${RESET}"
+  echo -e "    ${DIM}helios${RESET}                  — Launch Helios (branded splash)"
   echo -e "    ${DIM}pi update${RESET}               — Update all packages"
   echo -e "    ${DIM}pi --help${RESET}               — Show Pi CLI help"
   echo -e "    ${DIM}bash $INSTALLER_DIR/verify.sh${RESET}   — Run health check"
@@ -827,6 +892,7 @@ main() {
   check_prerequisites
   install_pi
   setup_helios_agent
+  install_helios_cli
   select_provider       # Provider BEFORE packages — pi update reads settings.json
   install_packages
   install_skill_deps    # neo4j-driver, tree-sitter for HEMA

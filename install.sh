@@ -7,7 +7,17 @@
 # =============================================================================
 
 set -euo pipefail
-trap 'echo -e "\n${RED}✗ Installer interrupted. Run again to resume (idempotent).${RESET}"' EXIT
+cleanup() {
+  # Kill any leftover spinner
+  if [[ -n "${spin_pid:-}" ]] && kill -0 "$spin_pid" 2>/dev/null; then
+    kill "$spin_pid" 2>/dev/null || true
+    wait "$spin_pid" 2>/dev/null || true
+  fi
+  # Restore cursor visibility
+  printf '\033[?25h'
+  echo -e "\n${RED}✗ Installer interrupted. Run again to resume (idempotent).${RESET}"
+}
+trap cleanup EXIT INT TERM
 
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -63,6 +73,7 @@ start_spinner() {
   local msg="${1:-Working...}"
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   local i=0
+  printf '\033[?25l'
   while true; do
     echo -ne "  ${CYAN}${frames[$i]}${RESET}  ${msg}\r"
     i=$(( (i+1) % ${#frames[@]} ))
@@ -79,6 +90,7 @@ stop_spinner() {
     spin_pid=""
   fi
   echo -ne "\r\033[K"
+  printf '\033[?25h'
 }
 
 run_with_spinner() {
@@ -573,8 +585,18 @@ setup_memgraph() {
     # Fresh install via docker compose
     local compose_file="$PI_AGENT_DIR/proxies/memgraph/docker-compose.yml"
     if [[ -f "$compose_file" ]]; then
+      # Detect docker compose v1 vs v2
+      local compose_cmd="docker compose"
+      if ! docker compose version &>/dev/null 2>&1; then
+        if command -v docker-compose &>/dev/null; then
+          compose_cmd="docker-compose"
+        else
+          warn "Neither 'docker compose' nor 'docker-compose' found"
+          return 0
+        fi
+      fi
       run_with_spinner "Starting Memgraph (first time — downloading image)" \
-        bash -c "cd '$PI_AGENT_DIR/proxies/memgraph' && docker compose up -d" || {
+        bash -c "cd '$PI_AGENT_DIR/proxies/memgraph' && $compose_cmd up -d" || {
         warn "Memgraph failed to start — you can set it up later"
         return 0
       }
@@ -607,11 +629,11 @@ setup_ollama() {
 
     if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
       info "Installing Ollama..."
-      if curl -fsSL https://ollama.ai/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
+      if curl -fsSL https://ollama.com/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
         success "Ollama installed"
       else
         warn "Ollama auto-install failed"
-        info "Install manually: https://ollama.ai"
+        info "Install manually: https://ollama.com"
         return 0
       fi
     else
@@ -765,6 +787,7 @@ setup_api_keys() {
     info ".env already exists — updating only empty values"
   else
     cp "$env_template" "$env_file"
+    chmod 600 "$env_file"
     info "Created .env from template"
   fi
 
@@ -835,6 +858,8 @@ setup_api_keys() {
   prompt_key "ANTHROPIC_API_KEY" "for fallback if primary is Bedrock/OpenAI" "optional"
 
   success ".env configured at $env_file"
+  # Secure .env permissions (API keys should not be world-readable)
+  chmod 600 "$env_file"
 }
 
 # ─── Wire API Keys to Shell ───────────────────────────────────────────────────
@@ -908,11 +933,14 @@ setup_familiar() {
     return 0
   fi
 
-  run_with_spinner "Cloning familiar → ~/.familiar/" \
-    git clone "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR" || {
-    warn "Could not clone Familiar — check the URL and your GitHub access"
+  if ! run_with_spinner "Cloning familiar → ~/.familiar/" \
+    git clone "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR"; then
+    warn "Could not clone Familiar"
+    echo -e "    ${DIM}If this is a private repo, configure git credentials:${RESET}"
+    echo -e "    ${DIM}  gh auth login${RESET}"
+    echo -e "    ${DIM}  # or: git config --global credential.helper osxkeychain${RESET}"
     return 0
-  }
+  fi
   success "Familiar cloned to $FAMILIAR_DIR"
 
   # Check if Familiar needs dependency installation

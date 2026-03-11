@@ -4,6 +4,7 @@
   "defaultModel": "gpt-5.2",
   "enableSkillCommands": true,
   "hideThinkingBlock": false,
+  "quietStartup": true,
   "enabledModels": [
     "openai/gpt-5.2",
     "openai/gpt-4o",

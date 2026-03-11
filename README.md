@@ -91,6 +91,7 @@ bash ~/helios-team-installer/install.sh
 | Node.js | 18+ | [nodejs.org](https://nodejs.org) or `brew install node` |
 | npm | Any | Bundled with Node |
 | git | Any | `brew install git` or `apt install git` |
+| python3 | Any | `xcode-select --install` (macOS) or `brew install python3` |
 
 ---
 

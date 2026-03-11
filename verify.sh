@@ -42,10 +42,16 @@ echo ""
 section "1. Core Binaries"
 
 if command -v pi &>/dev/null; then
-  pi_ver=$(pi --version 2>/dev/null | head -1 || echo "unknown")
+  pi_ver=$(pi --version 2>/dev/null | tail -1 || echo "unknown")
   check_pass "pi binary: $pi_ver ($(which pi))"
 else
   check_fail "pi binary not found — run: npm install -g @mariozechner/pi-coding-agent"
+fi
+
+if command -v helios &>/dev/null; then
+  check_pass "helios CLI: $(which helios)"
+else
+  check_warn "helios CLI not found — run install.sh to add it"
 fi
 
 if command -v node &>/dev/null; then
@@ -326,7 +332,7 @@ if command -v ollama &>/dev/null; then
     check_warn "Ollama not running — start with: ollama serve"
   fi
 else
-  check_warn "Ollama not installed — embeddings unavailable (https://ollama.ai)"
+  check_warn "Ollama not installed — embeddings unavailable (https://ollama.com)"
 fi
 
 # ─── 10. HEMA (Episodic Memory) ──────────────────────────────────────────────
@@ -423,7 +429,7 @@ echo ""
 total=$((PASS + WARN + FAIL))
 if [[ "$FAIL" -eq 0 && "$WARN" -le 3 ]]; then
   echo -e "  ${GREEN}${BOLD}  ✓ System healthy — ready to use Pi + Helios!${RESET}"
-  echo -e "  ${DIM}  Run: pi${RESET}"
+  echo -e "  ${DIM}  Run: helios${RESET}"
 elif [[ "$FAIL" -eq 0 ]]; then
   echo -e "  ${YELLOW}${BOLD}  ⚠ System functional with warnings${RESET}"
   echo -e "  ${DIM}  Optional items are missing — see warnings above${RESET}"

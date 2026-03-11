@@ -4,6 +4,7 @@
   "defaultModel": "claude-sonnet-4-5-20250514",
   "enableSkillCommands": true,
   "hideThinkingBlock": false,
+  "quietStartup": true,
   "enabledModels": [
     "anthropic/claude-sonnet-4-6",
     "anthropic/claude-opus-4-6",

@@ -26,6 +26,8 @@ with open('$config') as f: cfg = json.load(f)
 with open('/tmp/agent-settings.json') as f: agent = json.load(f)
 cfg['packages'] = agent.get('packages', cfg.get('packages', []))
 cfg['skills'] = agent.get('skills', cfg.get('skills', []))
+cfg['extensions'] = agent.get('extensions', cfg.get('extensions', []))
+cfg['quietStartup'] = agent.get('quietStartup', cfg.get('quietStartup', True))
 with open('$config', 'w') as f: json.dump(cfg, f, indent=2)
 print(f'Updated: $config')
 "

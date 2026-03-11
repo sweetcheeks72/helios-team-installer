@@ -98,6 +98,14 @@ if command -v pi &>/dev/null; then
   fi
 fi
 
+# ─── Remove Helios CLI symlinks ──────────────────────────────────────────────
+for helios_path in /usr/local/bin/helios "$HOME/.local/bin/helios"; do
+  if [[ -L "$helios_path" ]] || [[ -f "$helios_path" ]]; then
+    rm -f "$helios_path" 2>/dev/null || sudo rm -f "$helios_path" 2>/dev/null || true
+    success "Removed $helios_path"
+  fi
+done
+
 # ─── 4. Remove Familiar Skills ────────────────────────────────────────────────
 if [[ -d "$FAMILIAR_DIR" ]]; then
   ask "Remove ~/.familiar/ (Familiar skills)? [y/N]:"
@@ -115,7 +123,7 @@ echo ""
 echo -e "  ${BOLD}Note on API Keys:${RESET}"
 echo -e "  ${DIM}API keys set in shell profiles (e.g., ~/.zshrc, ~/.bashrc) were NOT removed.${RESET}"
 echo -e "  ${DIM}To remove them manually, search for ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.${RESET}"
-if [[ -f "$HOME/.pi-agent-env.backup."* ]] 2>/dev/null; then
+if ls "$HOME"/.pi-agent-env.backup.* &>/dev/null; then
   echo -e "  ${DIM}Your .env was backed up — find it with: ls ~/.pi-agent-env.backup.*${RESET}"
 fi
 

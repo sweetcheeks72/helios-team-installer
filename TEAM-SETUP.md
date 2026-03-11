@@ -268,6 +268,12 @@ source ~/.zshrc
 bash ~/helios-team-installer/verify.sh
 ```
 
+### Connecting to Memgraph
+Memgraph provides session memory and knowledge graph capabilities. If you have a Memgraph instance running:
+- Ensure `MEMGRAPH_HOST` and `MEMGRAPH_PORT` are set in `~/.pi/agent/.env`
+- The MCP adapter connects automatically when configured
+- Verify with: `bash ~/helios-team-installer/verify.sh` (checks Bolt port 7687)
+
 ### Uninstalling
 ```bash
 bash ~/helios-team-installer/uninstall.sh

@@ -29,6 +29,7 @@ bash ~/helios-team-installer/install.sh
 | **Familiar Skills** | Gmail, Calendar, Drive, transcription skills (optional) |
 | **Provider Config** | settings.json wired to your chosen AI provider |
 | **API Keys** | Guided .env setup with interactive prompts |
+| **Memgraph** | Knowledge graph for session memory (optional) |
 
 ---
 
@@ -105,7 +106,7 @@ The AI personality loaded into Pi. Helios plans, delegates, coordinates, and ver
 
 | Package | Purpose |
 |---------|---------|
-| `pi-mcp-adapter` | MCP server connections (GitHub, Figma) |
+| `pi-mcp-adapter` | MCP server connections (GitHub, Figma, Memgraph) |
 | `pi-subagents` | Feynman multi-agent delegation framework |
 | `pi-messenger` | Crew coordination & multi-agent messaging |
 | `pi-coordination` | Parallel task coordination with plan/coordinate tools |

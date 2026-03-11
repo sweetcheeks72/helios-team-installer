@@ -236,6 +236,24 @@ else
   check_warn "Figma MCP token not set (optional)"
 fi
 
+# ─── 8. Memgraph ──────────────────────────────────────────────────────────────
+section "8. Memgraph (optional)"
+
+if command -v nc &>/dev/null; then
+  if nc -z 127.0.0.1 7687 2>/dev/null; then
+    check_pass "Memgraph Bolt port 7687: reachable"
+  else
+    check_warn "Memgraph Bolt port 7687: not reachable (optional — start Memgraph if you want session memory)"
+  fi
+else
+  # Try curl as fallback
+  if curl -s --connect-timeout 2 telnet://127.0.0.1:7687 &>/dev/null; then
+    check_pass "Memgraph Bolt port 7687: reachable"
+  else
+    check_warn "Memgraph connectivity check skipped (install nc or curl)"
+  fi
+fi
+
 # ─── Report Card ──────────────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"

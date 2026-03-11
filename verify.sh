@@ -266,21 +266,105 @@ else
 fi
 
 # ─── 8. Memgraph ──────────────────────────────────────────────────────────────
-section "8. Memgraph (optional)"
+section "8. Memgraph"
 
-if command -v nc &>/dev/null; then
-  if nc -z 127.0.0.1 7687 2>/dev/null; then
-    check_pass "Memgraph Bolt port 7687: reachable"
+mg_running=""
+for name in helios-memgraph familiar-graph-1; do
+  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
+    mg_running="$name"
+    break
+  fi
+done
+
+if [[ -n "$mg_running" ]]; then
+  check_pass "Memgraph container running ($mg_running)"
+
+  # Check Bolt connectivity via neo4j-driver
+  neo_driver="$PI_AGENT_DIR/skills/skill-graph/scripts/node_modules/neo4j-driver"
+  if [[ -d "$neo_driver" ]]; then
+    if node -e "const d=require('$neo_driver');const x=d.driver('bolt://localhost:7687',d.auth.basic('memgraph','memgraph'));x.verifyConnectivity().then(()=>{console.log('ok');x.close()}).catch(()=>{process.exit(1)})" 2>/dev/null; then
+      check_pass "Bolt connection verified (neo4j-driver → localhost:7687)"
+    else
+      check_warn "Bolt port open but driver connection failed"
+    fi
+  elif nc -z 127.0.0.1 7687 2>/dev/null; then
+    check_pass "Memgraph Bolt port 7687 reachable"
+    check_warn "neo4j-driver not installed — run installer to add it"
+  fi
+
+  # Memory cap
+  mem=$(docker inspect --format '{{.HostConfig.Memory}}' "$mg_running" 2>/dev/null || echo "0")
+  if [[ "$mem" != "0" ]]; then
+    mem_gb=$((mem / 1073741824))
+    check_pass "Memory capped at ${mem_gb}GB"
   else
-    check_warn "Memgraph Bolt port 7687: not reachable (optional — start Memgraph if you want session memory)"
+    check_warn "No memory limit — recommend: docker update --memory 12g $mg_running"
   fi
 else
-  # Try curl as fallback
-  if curl -s --connect-timeout 2 telnet://127.0.0.1:7687 &>/dev/null; then
-    check_pass "Memgraph Bolt port 7687: reachable"
+  if command -v docker &>/dev/null; then
+    check_warn "Memgraph not running — start with: cd ~/.pi/agent/proxies/memgraph && docker compose up -d"
   else
-    check_warn "Memgraph connectivity check skipped (install nc or curl)"
+    check_warn "Docker not installed — Memgraph unavailable"
   fi
+fi
+
+# ─── 9. Ollama ────────────────────────────────────────────────────────────────
+section "9. Ollama (Embeddings)"
+
+if command -v ollama &>/dev/null; then
+  check_pass "Ollama installed"
+  if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+    check_pass "Ollama running"
+    for model in granite-embedding qwen3-embedding; do
+      if ollama list 2>/dev/null | grep -q "$model"; then
+        check_pass "$model model"
+      else
+        check_warn "$model not pulled — run: ollama pull $model"
+      fi
+    done
+  else
+    check_warn "Ollama not running — start with: ollama serve"
+  fi
+else
+  check_warn "Ollama not installed — embeddings unavailable (https://ollama.ai)"
+fi
+
+# ─── 10. HEMA (Episodic Memory) ──────────────────────────────────────────────
+section "10. HEMA (Episodic Memory)"
+
+sg_dir="$PI_AGENT_DIR/skills/skill-graph/scripts"
+if [[ -d "$sg_dir/node_modules/neo4j-driver" ]]; then
+  check_pass "neo4j-driver installed"
+else
+  check_warn "neo4j-driver missing — run installer to add it"
+fi
+
+if [[ -f "$sg_dir/ingest-episodes.js" ]]; then
+  check_pass "ingest-episodes.js present"
+else
+  check_warn "ingest-episodes.js missing — pull latest helios-agent"
+fi
+
+if [[ -f "$sg_dir/memory-recall.js" ]]; then
+  check_pass "memory-recall.js present"
+else
+  check_warn "memory-recall.js missing — pull latest helios-agent"
+fi
+
+# ─── 11. MCP Toolchain ───────────────────────────────────────────────────────
+section "11. MCP Toolchain"
+
+if command -v uvx &>/dev/null; then
+  check_pass "uvx $(uvx --version 2>/dev/null | head -1)"
+else
+  check_warn "uvx not found — mcp-memgraph server unavailable"
+fi
+
+if [[ -f "$PI_AGENT_DIR/mcp.json" ]]; then
+  mcp_count=$(python3 -c "import json;d=json.load(open('$PI_AGENT_DIR/mcp.json'));print(len(d.get('mcpServers',{})))" 2>/dev/null || echo "0")
+  check_pass "mcp.json: $mcp_count server(s) configured"
+else
+  check_warn "mcp.json not found"
 fi
 
 # ─── Report Card ──────────────────────────────────────────────────────────────

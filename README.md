@@ -23,13 +23,16 @@ bash ~/helios-team-installer/install.sh
 | Component | Description |
 |-----------|-------------|
 | **Pi CLI** | The terminal AI coding harness (`@mariozechner/pi-coding-agent`) |
-| **Helios Agent** | Orchestrator identity, agents, skills, extensions (~/.pi/agent/) |
+| **Helios Agent** | Orchestrator identity, 50+ agents, 13 skills, extensions (~/.pi/agent/) |
 | **20 Git Packages** | Extensions for subagents, coordination, design deck, web access, etc. |
-| **5 Extensions** | Local extensions in ~/.pi/agent/extensions/ |
-| **Familiar Skills** | Gmail, Calendar, Drive, transcription skills (optional) |
-| **Provider Config** | settings.json wired to your chosen AI provider |
+| **5 Local Extensions** | Governance, codebase-index, subagent-mesh, MCP startup, inline-enforce |
+| **Memgraph** | Knowledge graph — Docker container, schema, 12GB memory cap |
+| **Ollama** | Local embeddings — granite-embedding + qwen3-embedding models |
+| **MCP Servers** | Memgraph (via uvx), GitHub, Figma (via npx) |
+| **HEMA** | Episodic memory — neo4j-driver, ingest-episodes.js, memory-recall.js |
+| **Provider Config** | settings.json wired to Anthropic, Bedrock, or OpenAI |
 | **API Keys** | Guided .env setup with interactive prompts |
-| **Memgraph** | Knowledge graph for session memory (optional) |
+| **Familiar Skills** | Gmail, Calendar, Drive, transcription skills (optional) |
 
 ---
 
@@ -68,15 +71,15 @@ bash ~/helios-team-installer/install.sh
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
-         ┌────────────────┼───────────────────┐
-         │                │                   │
-┌────────▼───────┐ ┌──────▼──────┐  ┌────────▼───────┐
-│  AI Provider   │ │  MCP Servers│  │   ~/.familiar/ │
-│                │ │             │  │   (optional)    │
-│  Anthropic     │ │  GitHub     │  │  gmcli gccli   │
-│  Bedrock       │ │  Figma      │  │  gdcli transcr.│
-│  OpenAI        │ │             │  └────────────────┘
-└────────────────┘ └─────────────┘
+    ┌─────────────────────┼─────────────────────┬────────────────┐
+    │                     │                     │                │
+┌───▼────────────┐ ┌──────▼──────┐  ┌──────────▼──┐  ┌─────────▼─────┐
+│  AI Provider   │ │  MCP Servers│  │  Memgraph   │  │   Ollama      │
+│                │ │             │  │  (Docker)   │  │               │
+│  Anthropic     │ │  memgraph   │  │  Bolt :7687 │  │  granite-emb  │
+│  Bedrock       │ │  GitHub     │  │  Lab  :7444 │  │  qwen3-emb    │
+│  OpenAI        │ │  Figma      │  │  12GB cap   │  │  :11434       │
+└────────────────┘ └─────────────┘  └─────────────┘  └───────────────┘
 ```
 
 ---

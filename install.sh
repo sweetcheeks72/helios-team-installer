@@ -340,6 +340,185 @@ print('Merged provider config into existing settings.json')
   success "settings.json configured for $SELECTED_PROVIDER"
 }
 
+# ─── Skill-Graph Dependencies ─────────────────────────────────────────────────
+install_skill_deps() {
+  step "Skill-Graph Dependencies"
+
+  local sg_dir="$PI_AGENT_DIR/skills/skill-graph/scripts"
+  if [[ ! -d "$sg_dir" ]] || [[ ! -f "$sg_dir/package.json" ]]; then
+    info "skill-graph/scripts not found — skipping"
+    return 0
+  fi
+
+  if [[ -d "$sg_dir/node_modules/neo4j-driver" ]]; then
+    success "neo4j-driver already installed"
+  else
+    run_with_spinner "Installing neo4j-driver + tree-sitter" \
+      bash -c "cd '$sg_dir' && npm install --legacy-peer-deps --no-audit --no-fund" || \
+      warn "Dependency install failed — HEMA memory will be limited"
+  fi
+}
+
+# ─── Memgraph (Knowledge Graph) ──────────────────────────────────────────────
+setup_memgraph() {
+  step "Memgraph (Knowledge Graph)"
+
+  # Check Docker
+  if ! command -v docker &>/dev/null; then
+    warn "Docker not installed — Memgraph will be skipped"
+    info "Install Docker Desktop: https://docs.docker.com/get-docker"
+    info "Then re-run the installer to set up Memgraph"
+    return 0
+  fi
+
+  if ! docker info &>/dev/null 2>&1; then
+    warn "Docker is installed but not running — start Docker Desktop"
+    info "Then re-run the installer to set up Memgraph"
+    return 0
+  fi
+
+  # Check if a Memgraph container already exists
+  local mg_container=""
+  for name in helios-memgraph familiar-graph-1; do
+    if docker ps -a --format '{{.Names}}' | grep -q "^${name}$" 2>/dev/null; then
+      mg_container="$name"
+      break
+    fi
+  done
+
+  if [[ -n "$mg_container" ]]; then
+    # Already exists — make sure it's running
+    if docker ps --format '{{.Names}}' | grep -q "^${mg_container}$" 2>/dev/null; then
+      success "Memgraph running ($mg_container)"
+    else
+      info "Starting existing Memgraph container..."
+      docker start "$mg_container" >> "$LOG_FILE" 2>&1 && \
+        success "Memgraph started ($mg_container)" || \
+        warn "Could not start $mg_container"
+    fi
+
+    # Cap memory at 12GB if unlimited (prevents OOM)
+    local mem
+    mem=$(docker inspect --format '{{.HostConfig.Memory}}' "$mg_container" 2>/dev/null || echo "0")
+    if [[ "$mem" == "0" ]]; then
+      docker update --memory 12g "$mg_container" >> "$LOG_FILE" 2>&1 && \
+        info "Memory capped at 12GB (prevents OOM)" || true
+    fi
+  else
+    # Fresh install via docker compose
+    local compose_file="$PI_AGENT_DIR/proxies/memgraph/docker-compose.yml"
+    if [[ -f "$compose_file" ]]; then
+      run_with_spinner "Starting Memgraph (first time — downloading image)" \
+        bash -c "cd '$PI_AGENT_DIR/proxies/memgraph' && docker compose up -d" || {
+        warn "Memgraph failed to start — you can set it up later"
+        return 0
+      }
+      success "Memgraph started"
+    else
+      warn "No docker-compose.yml found — skipping Memgraph"
+      return 0
+    fi
+  fi
+
+  # Apply graph schema
+  local mg_running
+  mg_running=$(docker ps --format '{{.Names}}' | grep -E "^(helios-memgraph|familiar-graph-1)$" | head -1)
+  local schema="$PI_AGENT_DIR/skills/skill-graph/scripts/schema.cypher"
+  if [[ -n "$mg_running" ]] && [[ -f "$schema" ]]; then
+    docker exec -i "$mg_running" mgconsole --username memgraph --password memgraph \
+      < "$schema" >> "$LOG_FILE" 2>&1 && info "Graph schema applied" || true
+  fi
+}
+
+# ─── Ollama (Local Embeddings) ────────────────────────────────────────────────
+setup_ollama() {
+  step "Ollama (Local Embeddings)"
+
+  if ! command -v ollama &>/dev/null; then
+    echo ""
+    ask "Install Ollama for local embeddings? (required for semantic search) [Y/n]:"
+    read -r install_ollama
+    install_ollama="${install_ollama:-Y}"
+
+    if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
+      info "Installing Ollama..."
+      if curl -fsSL https://ollama.ai/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
+        success "Ollama installed"
+      else
+        warn "Ollama auto-install failed"
+        info "Install manually: https://ollama.ai"
+        return 0
+      fi
+    else
+      info "Skipping Ollama — semantic search will be unavailable"
+      return 0
+    fi
+  else
+    success "Ollama installed"
+  fi
+
+  # Ensure Ollama is running
+  if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+    info "Starting Ollama..."
+    ollama serve >> "$LOG_FILE" 2>&1 &
+    sleep 3
+    if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+      success "Ollama running"
+    else
+      warn "Ollama not responding — you may need to start it manually"
+      return 0
+    fi
+  else
+    success "Ollama running"
+  fi
+
+  # Pull required embedding models
+  for model in granite-embedding qwen3-embedding; do
+    if ollama list 2>/dev/null | grep -q "$model"; then
+      success "$model model ready"
+    else
+      run_with_spinner "Pulling $model (this may take a few minutes)" \
+        ollama pull "$model" || warn "Failed to pull $model"
+    fi
+  done
+}
+
+# ─── MCP Servers ──────────────────────────────────────────────────────────────
+setup_mcp_servers() {
+  step "MCP Servers"
+
+  # uv/uvx — needed for mcp-memgraph
+  if ! command -v uvx &>/dev/null; then
+    info "Installing uv (Python package manager for MCP servers)..."
+    if curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
+      [ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env" 2>/dev/null || true
+      export PATH="$HOME/.local/bin:$PATH"
+      success "uv installed"
+    else
+      warn "uv install failed — MCP memgraph server will be unavailable"
+    fi
+  else
+    success "uv/uvx ready"
+  fi
+
+  # Warm up mcp-memgraph binary
+  if command -v uvx &>/dev/null; then
+    info "Caching mcp-memgraph server..."
+    uvx --from mcp-memgraph mcp-memgraph --help >> "$LOG_FILE" 2>&1 &
+    success "mcp-memgraph (Bolt → MCP bridge)"
+  fi
+
+  # npx for GitHub MCP
+  if command -v npx &>/dev/null; then
+    success "GitHub MCP (via npx)"
+  else
+    warn "npx not found — GitHub MCP server unavailable"
+  fi
+
+  # Figma MCP (informational — needs token)
+  info "Figma MCP available if FIGMA_MCP_TOKEN is set in .env"
+}
+
 # ─── API Key Setup ────────────────────────────────────────────────────────────
 setup_api_keys() {
   step "API Key Setup"
@@ -650,6 +829,10 @@ main() {
   setup_helios_agent
   select_provider       # Provider BEFORE packages — pi update reads settings.json
   install_packages
+  install_skill_deps    # neo4j-driver, tree-sitter for HEMA
+  setup_memgraph        # Docker + Memgraph + schema
+  setup_ollama          # Ollama + embedding models
+  setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP
   setup_api_keys
   wire_env_to_shell
   setup_familiar

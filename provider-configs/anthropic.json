@@ -44,5 +44,12 @@
     "git:github.com/nicobailon/pi-annotate",
     "git:github.com/nicobailon/pi-skill-palette",
     "git:github.com/nicobailon/pi-boomerang"
+  ],
+  "extensions": [
+    "~/.pi/agent/extensions/helios-governance",
+    "~/.pi/agent/extensions/codebase-index.ts",
+    "~/.pi/agent/extensions/mcp-startup-visibility.ts",
+    "~/.pi/agent/extensions/subagent-inline-enforce.ts",
+    "~/.pi/agent/extensions/subagent-mesh.ts"
   ]
 }

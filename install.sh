@@ -310,6 +310,15 @@ for p in template_pkgs:
         existing_pkgs.append(p)
 existing['packages'] = existing_pkgs
 
+# Merge extensions: add any from template not already present (additive union)
+template_exts = template.get('extensions', [])
+existing_exts = existing.get('extensions', [])
+existing_ext_keys = set(pkg_key(e) for e in existing_exts)
+for e in template_exts:
+    if pkg_key(e) not in existing_ext_keys:
+        existing_exts.append(e)
+existing['extensions'] = existing_exts
+
 # Ensure other required keys
 existing.setdefault('enableSkillCommands', True)
 existing.setdefault('hideThinkingBlock', False)

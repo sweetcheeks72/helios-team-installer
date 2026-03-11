@@ -141,19 +141,34 @@ fi
 section "5. Extensions"
 
 if [[ -d "$PI_AGENT_DIR/extensions" ]]; then
-  ext_dirs=$(find "$PI_AGENT_DIR/extensions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-  if [[ "$ext_dirs" -ge 5 ]]; then
-    check_pass "Extensions: $ext_dirs directories (✓ expect 5+)"
+  # Check each required extension by name
+  required_exts=(
+    "helios-governance:dir"
+    "codebase-index.ts:file"
+    "mcp-startup-visibility.ts:file"
+    "subagent-inline-enforce.ts:file"
+    "subagent-mesh.ts:file"
+  )
+  missing_exts=()
+  found_exts=0
+  for entry in "${required_exts[@]}"; do
+    ext_name="${entry%%:*}"
+    ext_type="${entry##*:}"
+    ext_path="$PI_AGENT_DIR/extensions/$ext_name"
+    if [[ "$ext_type" == "dir" && -d "$ext_path" ]] || [[ "$ext_type" == "file" && -f "$ext_path" ]]; then
+      check_pass "  Extension: $ext_name"
+      ((found_exts++))
+    else
+      missing_exts+=("$ext_name")
+    fi
+  done
+  if [[ ${#missing_exts[@]} -gt 0 ]]; then
+    check_warn "Missing extensions: ${missing_exts[*]} — run: cd ~/.pi/agent && git pull"
   else
-    check_warn "Extensions: $ext_dirs (expected 5)"
+    check_pass "All ${found_exts} required extensions present"
   fi
-  # List them
-  while IFS= read -r ext_dir; do
-    ext_name=$(basename "$ext_dir")
-    check_pass "  Extension: $ext_name"
-  done < <(find "$PI_AGENT_DIR/extensions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
 else
-  check_warn "~/.pi/agent/extensions/ not found"
+  check_fail "~/.pi/agent/extensions/ not found — run: cd ~/.pi/agent && git pull"
 fi
 
 # ─── 5b. Git Packages ─────────────────────────────────────────────────────────

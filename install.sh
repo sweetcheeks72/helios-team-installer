@@ -8,6 +8,7 @@
 
 set -euo pipefail
 cleanup() {
+  local exit_code=$?
   # Kill any leftover spinner
   if [[ -n "${spin_pid:-}" ]] && kill -0 "$spin_pid" 2>/dev/null; then
     kill "$spin_pid" 2>/dev/null || true
@@ -15,7 +16,9 @@ cleanup() {
   fi
   # Restore cursor visibility
   printf '\033[?25h'
-  echo -e "\n${RED}✗ Installer interrupted. Run again to resume (idempotent).${RESET}"
+  if [[ $exit_code -ne 0 ]]; then
+    echo -e "\n${RED}✗ Installer interrupted. Run again to resume (idempotent).${RESET}"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -610,7 +613,7 @@ setup_memgraph() {
 
   # Apply graph schema
   local mg_running
-  mg_running=$(docker ps --format '{{.Names}}' | grep -E "^(helios-memgraph|familiar-graph-1)$" | head -1)
+  mg_running=$(docker ps --format '{{.Names}}' | grep -E "^(helios-memgraph|familiar-graph-1)$" | head -1 || true)
   local schema="$PI_AGENT_DIR/skills/skill-graph/scripts/schema.cypher"
   if [[ -n "$mg_running" ]] && [[ -f "$schema" ]]; then
     docker exec -i "$mg_running" mgconsole --username memgraph --password memgraph \
@@ -998,7 +1001,11 @@ run_verification() {
 
   # Count skills
   local skill_count=0
-  skill_count=$(find "$PI_AGENT_DIR/skills" "$FAMILIAR_DIR/skills" -name "SKILL.md" 2>/dev/null | wc -l | tr -d ' ')
+  skill_count=$(
+    (find "$PI_AGENT_DIR/skills" -name "SKILL.md" 2>/dev/null
+     find "$FAMILIAR_DIR/skills" -name "SKILL.md" 2>/dev/null
+     true) | wc -l | tr -d ' '
+  )
   if [[ "$skill_count" -ge 13 ]]; then
     success "Skills: $skill_count (expect 13+)"
   else
@@ -1016,7 +1023,7 @@ run_verification() {
   local env_file="$PI_AGENT_DIR/.env"
   if [[ -f "$env_file" ]]; then
     local keys_set
-    keys_set=$(grep -v '^#' "$env_file" 2>/dev/null | grep -v '^$' | grep -v '=$' | wc -l | tr -d ' ')
+    keys_set=$(grep -v '^#' "$env_file" 2>/dev/null | grep -v '^$' | grep -v '=$' | wc -l | tr -d ' ') || keys_set=0
     if [[ "$keys_set" -gt 0 ]]; then
       success ".env: $keys_set key(s) configured"
     else

@@ -5,10 +5,17 @@
 Run this one command. It handles everything:
 
 ```bash
-git clone https://github.com/sweetcheeks72/helios-team-installer.git ~/helios-team-installer && bash ~/helios-team-installer/install.sh
+curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 ```
 
 The installer walks you through each step interactively. Total time: ~10 minutes.
+
+> **No git clone needed** — the bootstrap downloads and sets everything up automatically.
+>
+> **Fallback (if curl isn't available):**
+> ```bash
+> git clone https://github.com/sweetcheeks72/helios-team-installer.git ~/helios-team-installer && bash ~/helios-team-installer/install.sh
+> ```
 
 When it's done, open any project and type `pi` — you now have an AI orchestrator that plans, delegates, reviews, and verifies code.
 

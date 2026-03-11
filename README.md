@@ -5,12 +5,11 @@
 ## Quick Start
 
 ```bash
-# One-liner bootstrap (from any machine)
-git clone https://github.com/sweetcheeks72/helios-team-installer.git ~/helios-team-installer
-bash ~/helios-team-installer/install.sh
+# One-liner bootstrap (from any machine — no pre-cloning needed)
+curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 ```
 
-Or if you already have the repo:
+Or if you already have the repo cloned:
 ```bash
 bash ~/helios-team-installer/install.sh
 ```

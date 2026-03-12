@@ -52,7 +52,7 @@ ask()     { echo -en "${MAGENTA}  ? ${RESET}$* "; }
 
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELIOS_RELEASE_URL="https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download"
-HELIOS_AGENT_TARBALL="helios-agent.tar.gz"
+HELIOS_AGENT_TARBALL="helios-agent-latest.tar.gz"
 FAMILIAR_REPO="github.com/sweetcheeks72/familiar"  # NOTE: verify this URL
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
@@ -1231,7 +1231,7 @@ detect_update_mode() {
   done
 
   # If agent dir exists with a configured provider and .env, this is an update
-  if [[ -d "$PI_AGENT_DIR/.git" ]] && [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
+  if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     local current_provider=""
     local current_model=""
 

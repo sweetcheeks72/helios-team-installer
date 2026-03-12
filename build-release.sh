@@ -203,4 +203,12 @@ echo ""
 echo "  Checksum contents:"
 cat "${CHECKSUM_PATH}" | sed 's/^/    /'
 echo ""
+echo "${VERSION}" > "${DIST_DIR}/VERSION"
+echo "  📌 Version  : ${DIST_DIR}/VERSION"
+echo ""
+# Create latest symlink for installer compatibility
+cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest.tar.gz"
+cp "${CHECKSUM_PATH}" "${DIST_DIR}/helios-agent-latest.tar.gz.sha256"
+echo "  📎 Latest   : ${DIST_DIR}/helios-agent-latest.tar.gz"
+echo ""
 echo "============================================================"

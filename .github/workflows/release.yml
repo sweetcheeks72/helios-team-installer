@@ -143,5 +143,6 @@ jobs:
           files: |
             ${{ steps.artefacts.outputs.TARBALL }}
             ${{ steps.artefacts.outputs.CHECKSUM }}
+            installer/dist/VERSION
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

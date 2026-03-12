@@ -53,7 +53,7 @@ ask()     { echo -en "${MAGENTA}  ? ${RESET}$* "; }
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELIOS_RELEASE_URL="https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download"
 HELIOS_AGENT_TARBALL="helios-agent-latest.tar.gz"
-FAMILIAR_REPO="github.com/sweetcheeks72/familiar"  # NOTE: verify this URL
+FAMILIAR_REPO="github.com/sweetcheeks72/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
 LOG_FILE="$INSTALLER_DIR/install.log"
@@ -310,6 +310,9 @@ setup_helios_agent() {
         actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
       elif command -v shasum &>/dev/null; then
         actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
+      else
+        warn "No sha256 tool found — skipping checksum verification"
+        actual_sha="$expected_sha"
       fi
       if [[ -n "$actual_sha" ]] && [[ "$actual_sha" != "$expected_sha" ]]; then
         warn "SHA256 mismatch — aborting update"
@@ -380,6 +383,9 @@ setup_helios_agent() {
         actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
       elif command -v shasum &>/dev/null; then
         actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
+      else
+        warn "No sha256 tool found — skipping checksum verification"
+        actual_sha="$expected_sha"
       fi
       if [[ -n "$actual_sha" ]] && [[ "$actual_sha" != "$expected_sha" ]]; then
         warn "SHA256 mismatch — aborting migration"
@@ -1202,14 +1208,25 @@ wire_env_to_shell() {
 
   # Source now for immediate use
   if [[ -f "$env_file" ]]; then
-    while IFS='=' read -r key val; do
-      key="${key#export }"        # strip 'export ' prefix
-      key="${key#"${key%%[! ]*}"}" # strip leading whitespace
-      val="${val#"${val%%[! ]*}"}" # strip leading whitespace
-      val="${val%"${val##*[! ]}"}" # strip trailing whitespace
-      val="${val#\"}" ; val="${val%\"}"   # strip double quotes
-      val="${val#\'}" ; val="${val%\'}"   # strip single quotes
-      [[ "$key" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [ -n "$val" ] && export "$key=$val"
+    # L4 fix: use first-'='-only split so values containing '=' (e.g. base64
+    # API keys, URLs with query strings like https://host?a=b) are preserved
+    # verbatim.  The previous approach (IFS-equals-read) relied on bash re-joining
+    # extra fields which is fragile for API keys that contain '=' padding.
+    while IFS= read -r _env_line; do
+      # Strip leading whitespace and skip comments / blanks
+      _env_line="${_env_line#"${_env_line%%[! ]*}"}"
+      [[ -z "$_env_line" || "$_env_line" == \#* ]] && continue
+      # Split on FIRST '=' only
+      _env_key="${_env_line%%=*}"
+      _env_val="${_env_line#*=}"
+      _env_key="${_env_key#export }"            # strip optional 'export ' prefix
+      _env_key="${_env_key#"${_env_key%%[! ]*}"}" # trim leading whitespace
+      _env_key="${_env_key%"${_env_key##*[! ]}"}" # trim trailing whitespace
+      _env_val="${_env_val#"${_env_val%%[! ]*}"}" # trim leading whitespace
+      _env_val="${_env_val%"${_env_val##*[! ]}"}" # trim trailing whitespace
+      _env_val="${_env_val#\"}" ; _env_val="${_env_val%\"}"  # strip double quotes
+      _env_val="${_env_val#\'}" ; _env_val="${_env_val%\'}"  # strip single quotes
+      [[ "$_env_key" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [[ -n "$_env_val" ]] && export "$_env_key=$_env_val"
     done < "$env_file"
     success "API keys loaded into current session"
   fi
@@ -1447,6 +1464,123 @@ detect_update_mode() {
   fi
 }
 
+# ─── Bootstrap Scheduling ────────────────────────────────────────────────────
+#
+# Writes queued state files and launches bootstrap-codebases.js in the background.
+# Install is only considered successful when bootstrap completes OR durable queued
+# state files are written and the background job is launched successfully.
+#
+schedule_bootstrap() {
+  step "Codebase Bootstrap"
+
+  local bootstrap_script="$PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
+  local bootstrap_dir="$PI_AGENT_DIR/state/codebase-bootstrap"
+
+  if [[ ! -f "$bootstrap_script" ]]; then
+    warn "bootstrap-codebases.js not found — skipping bootstrap scheduling"
+    info "Re-run installer after pulling latest helios-agent to enable auto-bootstrap"
+    return 0
+  fi
+
+  if ! command -v node &>/dev/null; then
+    warn "node not found — cannot schedule bootstrap"
+    return 0
+  fi
+
+  # Ensure state dir exists
+  mkdir -p "$bootstrap_dir"
+
+  # Determine targets and write queued state files
+  local targets=("$PI_AGENT_DIR")
+  local installer_cwd
+  installer_cwd="$(pwd)"
+  local resolved_agent
+  resolved_agent="$(cd "$PI_AGENT_DIR" 2>/dev/null && pwd || echo "$PI_AGENT_DIR")"
+
+  if [[ "$installer_cwd" != "$resolved_agent" ]] && [[ -d "$installer_cwd/.git" ]]; then
+    targets+=("$installer_cwd")
+    info "Bootstrap targets: ~/.pi/agent + CWD ($installer_cwd)"
+  else
+    info "Bootstrap target: ~/.pi/agent"
+  fi
+
+  # Write queued state files for each target (durable evidence before launch)
+  local all_queued=true
+  for target_path in "${targets[@]}"; do
+    local status_key
+    status_key=$(python3 -c "import hashlib; print(hashlib.sha256('$target_path'.encode()).hexdigest()[:16])" 2>/dev/null || \
+                 node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update('$target_path').digest('hex').slice(0,16))" 2>/dev/null || echo "")
+    if [[ -z "$status_key" ]]; then
+      warn "Cannot compute status key for $target_path — skipping"
+      all_queued=false
+      continue
+    fi
+    local status_file="$bootstrap_dir/${status_key}.json"
+
+    # Only write queued if not already running/complete
+    local existing_state=""
+    existing_state=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('state',''))" 2>/dev/null || echo "")
+    if [[ "$existing_state" == "running" ]] || [[ "$existing_state" == "complete" ]]; then
+      info "Bootstrap already $existing_state for $target_path — keeping"
+      continue
+    fi
+
+    python3 -c "
+import json, datetime, os
+target = '$target_path'
+sf = '$status_file'
+now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+existing = {}
+if os.path.exists(sf):
+    try:
+        with open(sf) as f:
+            existing = json.load(f)
+    except: pass
+record = {
+    'state': 'queued',
+    'targetPath': target,
+    'queuedAt': now,
+    'startedAt': None,
+    'completedAt': None,
+    'error': None,
+    'indexedFiles': 0,
+    'totalChunks': 0,
+}
+existing.update(record)
+os.makedirs(os.path.dirname(sf), exist_ok=True)
+with open(sf, 'w') as f:
+    json.dump(existing, f, indent=2)
+    f.write('\n')
+print('queued: ' + target)
+" 2>/dev/null && info "Queued bootstrap: $target_path" || {
+      warn "Failed to write bootstrap state for $target_path"
+      all_queued=false
+    }
+  done
+
+  if [[ "$all_queued" == false ]]; then
+    warn "Some bootstrap state files could not be written"
+  fi
+
+  # Launch bootstrap-codebases.js in the background
+  local bootstrap_log="$PI_AGENT_DIR/logs/bootstrap-codebases.log"
+  mkdir -p "$(dirname "$bootstrap_log")"
+
+  # Pass installer CWD via env so bootstrap knows which repo to add
+  if BOOTSTRAP_CWD="$installer_cwd" nohup node "$bootstrap_script" \
+      >> "$bootstrap_log" 2>&1 &
+  then
+    local bg_pid=$!
+    disown "$bg_pid" 2>/dev/null || true
+    success "Bootstrap job launched (PID $bg_pid) — indexing will complete in background"
+    info "Log: $bootstrap_log"
+    info "Status: ls $bootstrap_dir/"
+  else
+    warn "Failed to launch bootstrap background job"
+    info "Manual run: node $bootstrap_script"
+  fi
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
   print_banner
@@ -1471,6 +1605,7 @@ main() {
   setup_memgraph        # Docker + Memgraph + schema + 12GB cap
   setup_ollama          # Ollama + embedding models (skips already-pulled)
   setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
+  schedule_bootstrap    # Queue + launch codebase indexing in background
 
   if [[ "$UPDATE_MODE" == false ]]; then
     setup_api_keys      # Interactive: prompt for keys

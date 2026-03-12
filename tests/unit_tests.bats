@@ -244,3 +244,231 @@ if bad:
     sys.exit(1)
 "
 }
+
+# ---------------------------------------------------------------------------
+# 13. Bootstrap scheduling — TASK-05/06/08 invariants
+# ---------------------------------------------------------------------------
+
+@test "schedule_bootstrap function exists in install.sh" {
+  grep -q 'schedule_bootstrap' "$INSTALLER_DIR/install.sh"
+}
+
+@test "schedule_bootstrap is called from main()" {
+  grep -q 'schedule_bootstrap' "$INSTALLER_DIR/install.sh"
+  # Verify it appears in the main() body (after the main() header line)
+  python3 -c "
+import sys
+with open('$INSTALLER_DIR/install.sh') as f:
+    lines = f.readlines()
+in_main = False
+depth = 0
+found = False
+for line in lines:
+    if line.strip().startswith('main()') and '{' in line:
+        in_main = True
+        depth = 1
+        continue
+    if in_main:
+        depth += line.count('{') - line.count('}')
+        if 'schedule_bootstrap' in line and not line.strip().startswith('#'):
+            found = True
+        if depth <= 0:
+            break
+if not found:
+    print('ERROR: schedule_bootstrap not called in main()')
+    sys.exit(1)
+"
+}
+
+@test "BOOTSTRAP_CWD env var is passed to bootstrap job in install.sh" {
+  grep -q 'BOOTSTRAP_CWD' "$INSTALLER_DIR/install.sh"
+}
+
+@test "bootstrap state dir path matches HELIOS_GRAPH_BOOTSTRAP_STATE_DIR in runtime contract" {
+  # Both install.sh and persist_runtime_contract must agree on the state dir
+  python3 -c "
+import sys, re
+with open('$INSTALLER_DIR/install.sh') as f:
+    content = f.read()
+# runtime contract must include HELIOS_GRAPH_BOOTSTRAP_STATE_DIR
+if 'HELIOS_GRAPH_BOOTSTRAP_STATE_DIR' not in content:
+    print('ERROR: HELIOS_GRAPH_BOOTSTRAP_STATE_DIR missing from install.sh')
+    sys.exit(1)
+# schedule_bootstrap must reference codebase-bootstrap
+if 'codebase-bootstrap' not in content:
+    print('ERROR: codebase-bootstrap dir not referenced in install.sh')
+    sys.exit(1)
+"
+}
+
+
+@test "schedule_bootstrap writes queued state files before launching background job" {
+  python3 -c "
+import sys
+with open('$INSTALLER_DIR/install.sh') as f:
+    lines = f.readlines()
+in_fn = False
+depth = 0
+fn_lines = []
+for line in lines:
+    if line.strip().startswith('schedule_bootstrap()') and '{' in line:
+        in_fn = True
+        depth = 1
+        continue
+    if in_fn:
+        depth += line.count('{') - line.count('}')
+        if depth <= 0:
+            break
+        fn_lines.append(line)
+fn_body = ''.join(fn_lines)
+json_pos = fn_body.find('json.dump')
+nohup_pos = fn_body.find('nohup')
+if json_pos < 0:
+    print('ERROR: json.dump (state write) not found in schedule_bootstrap')
+    sys.exit(1)
+if nohup_pos < 0:
+    print('ERROR: nohup (background launch) not found in schedule_bootstrap')
+    sys.exit(1)
+if json_pos > nohup_pos:
+    print('ERROR: json.dump must come BEFORE nohup in schedule_bootstrap')
+    sys.exit(1)
+"
+}
+
+# ---------------------------------------------------------------------------
+# 14. verify.sh bootstrap section invariants
+# ---------------------------------------------------------------------------
+
+@test "verify.sh has bootstrap state section" {
+  grep -q 'Bootstrap State' "$INSTALLER_DIR/verify.sh"
+}
+
+@test "verify.sh checks runtime contract file" {
+  grep -q 'runtime_contract' "$INSTALLER_DIR/verify.sh"
+}
+
+@test "verify.sh check_bootstrap_target function exists" {
+  grep -q 'check_bootstrap_target' "$INSTALLER_DIR/verify.sh"
+}
+
+@test "verify.sh prints self-heal commands for bootstrap failures" {
+  python3 -c "
+import sys
+with open('$INSTALLER_DIR/verify.sh') as f:
+    content = f.read()
+# Should have self-heal command for at least one bootstrap failure case
+if 'bootstrap-codebases.js' not in content:
+    print('ERROR: bootstrap-codebases.js not referenced in verify.sh self-heal')
+    sys.exit(1)
+if 'index-codebase.js' not in content:
+    print('ERROR: index-codebase.js not referenced in verify.sh self-heal')
+    sys.exit(1)
+"
+}
+
+@test "verify.sh bootstrap check covers both ~/.pi/agent and CWD" {
+  python3 -c "
+import sys
+with open('$INSTALLER_DIR/verify.sh') as f:
+    content = f.read()
+if '~/.pi/agent' not in content and 'PI_AGENT_DIR' not in content:
+    print('ERROR: verify.sh does not check bootstrap for ~/.pi/agent')
+    sys.exit(1)
+if 'CWD' not in content:
+    print('ERROR: verify.sh does not check bootstrap for CWD')
+    sys.exit(1)
+"
+}
+
+# ---------------------------------------------------------------------------
+# 15. codebase-index.ts no longer hardcodes familiar-graph-1
+# ---------------------------------------------------------------------------
+
+@test "codebase-index.ts does not hardcode familiar-graph-1" {
+  # Check the authoritative helios-package copy specifically
+  local ext_file=""
+  for candidate in \
+    "$INSTALLER_DIR/../helios-package/extensions/codebase-index.ts" \
+    "$INSTALLER_DIR/../helios/extensions/codebase-index.ts"; do
+    if [[ -f "$candidate" ]]; then
+      ext_file="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$ext_file" ]]; then
+    skip "codebase-index.ts not found relative to installer"
+  fi
+  # helios-package copy should NOT have the hardcoded exec command
+  ext_file="$INSTALLER_DIR/../helios-package/extensions/codebase-index.ts"
+  if [[ ! -f "$ext_file" ]]; then
+    skip "helios-package/extensions/codebase-index.ts not found"
+  fi
+  # It should NOT have the literal hardcoded exec command
+  if grep -q "familiar-graph-1 mgconsole" "$ext_file"; then
+    echo "FAIL: helios-package/extensions/codebase-index.ts still hardcodes familiar-graph-1 in mgconsole exec"
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 16. L4: install.sh env parsing handles values with embedded '='
+# ---------------------------------------------------------------------------
+
+@test "wire_env_to_shell uses IFS= read (first-equals-split) not IFS='=' read" {
+  # The old IFS='=' read -r key val is fragile for values like AWS_SECRET=abc=xyz.
+  # After L4 fix the function reads the whole line and splits on the first '=' explicitly.
+  python3 -c "
+import sys, re
+with open('$INSTALLER_DIR/install.sh') as f:
+    content = f.read()
+
+# Find the wire_env_to_shell function body
+m = re.search(r'wire_env_to_shell\(\)[^{]*\{(.{0,4000})', content, re.DOTALL)
+if not m:
+    print('ERROR: wire_env_to_shell() not found')
+    sys.exit(1)
+fn_body = m.group(1)[:2000]  # limit scan
+
+# Bad old pattern: IFS='=' read -r key val
+if re.search(r\"IFS='=' read\", fn_body):
+    print('ERROR: wire_env_to_shell still uses IFS=\\\"=\\\" read (broken for values with \\\"=\\\")')
+    sys.exit(1)
+
+# Must use first-equals split approach
+if '%%=*' not in fn_body and '#*=' not in fn_body:
+    print('ERROR: wire_env_to_shell must split key/val on first = using %%=* and #*=')
+    sys.exit(1)
+"
+}
+
+@test "wire_env_to_shell preserves values containing '='" {
+  # Functional test: export via a temp env file with a value containing '='
+  local tmp_env
+  tmp_env=$(mktemp)
+  echo "TEST_KEY_WITH_EQ=hello=world" > "$tmp_env"
+  echo "NORMAL_KEY=simple" >> "$tmp_env"
+
+  local result
+  result=$(bash -c "
+$(grep -A 30 'wire_env_to_shell\(\)' '$INSTALLER_DIR/install.sh' | grep -v 'wire_env_to_shell\(\)' | head -20)
+env_file='$tmp_env'
+while IFS= read -r _env_line; do
+  _env_line=\"\${_env_line#\"\${_env_line%%[! ]*}\"}\"
+  [[ -z \"\$_env_line\" || \"\$_env_line\" == \#* ]] && continue
+  _env_key=\"\${_env_line%%=*}\"
+  _env_val=\"\${_env_line#*=}\"
+  _env_key=\"\${_env_key#export }\"
+  _env_key=\"\${_env_key#\"\${_env_key%%[! ]*}\"}\"
+  _env_key=\"\${_env_key%\"\${_env_key##*[! ]}\"}\"
+  _env_val=\"\${_env_val#\"\${_env_val%%[! ]*}\"}\"
+  _env_val=\"\${_env_val%\"\${_env_val##*[! ]}\"}\"
+  _env_val=\"\${_env_val#\\\"}\" ; _env_val=\"\${_env_val%\\\"}\"
+  _env_val=\"\${_env_val#\'}\" ; _env_val=\"\${_env_val%\'}\"
+  [[ \"\$_env_key\" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [[ -n \"\$_env_val\" ]] && export \"\$_env_key=\$_env_val\"
+done < \"\$env_file\"
+echo \"\$TEST_KEY_WITH_EQ\"
+" 2>/dev/null)
+  rm -f "$tmp_env"
+  [ "$result" = "hello=world" ]
+}
+

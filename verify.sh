@@ -276,7 +276,9 @@ fi
 section "8. Memgraph"
 
 mg_running=""
-for name in memgraph helios-memgraph familiar-graph-1; do
+# M5 fix: check both 'memgraph' (preferred) and legacy 'familiar-graph-1',
+# matching the resolution order in install.sh's setup_memgraph().
+for name in memgraph familiar-graph-1; do
   if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
     mg_running="$name"
     break
@@ -313,6 +315,102 @@ else
   else
     check_warn "Docker not installed — Memgraph unavailable"
   fi
+fi
+
+# ─── 8b. Runtime Contract ─────────────────────────────────────────────────────
+section "8b. Graph Runtime Contract"
+
+runtime_contract="$PI_AGENT_DIR/runtime/memgraph.env"
+if [[ -f "$runtime_contract" ]]; then
+  contract_container=$(grep '^MEMGRAPH_CONTAINER=' "$runtime_contract" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+  check_pass "Runtime contract: $runtime_contract (container: ${contract_container:-?})"
+  # Validate the container recorded in the contract is actually running
+  if [[ -n "$contract_container" ]]; then
+    if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${contract_container}$"; then
+      check_pass "Contract container running: $contract_container"
+    else
+      check_warn "Contract container NOT running: $contract_container"
+      echo -e "    ${DIM}→ Self-heal: docker start ${contract_container}${RESET}"
+      echo -e "    ${DIM}→ Or re-run: bash ~/helios-team-installer/install.sh${RESET}"
+    fi
+  fi
+else
+  check_warn "Runtime contract missing: $runtime_contract"
+  echo -e "    ${DIM}→ Self-heal: bash ~/helios-team-installer/install.sh${RESET}"
+fi
+
+# ─── 8c. Codebase Bootstrap State ─────────────────────────────────────────────
+section "8c. Codebase Bootstrap State"
+
+bootstrap_dir="$PI_AGENT_DIR/state/codebase-bootstrap"
+
+# Helper: check bootstrap state for a given target path
+check_bootstrap_target() {
+  local target_path="$1"
+  local label="$2"
+  local status_key
+  status_key=$(python3 -c "import hashlib; print(hashlib.sha256('$target_path'.encode()).hexdigest()[:16])" 2>/dev/null || true)
+  if [[ -z "$status_key" ]]; then
+    check_warn "$label — cannot compute status key (python3 required)"
+    return
+  fi
+  local status_file="$bootstrap_dir/${status_key}.json"
+  if [[ -f "$status_file" ]]; then
+    local bs_state bs_error bs_indexed bs_chunks
+    bs_state=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('state','?'))" 2>/dev/null || echo "?")
+    bs_error=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('error') or '')" 2>/dev/null || echo "")
+    bs_indexed=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('indexedFiles',0))" 2>/dev/null || echo "0")
+    bs_chunks=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('totalChunks',0))" 2>/dev/null || echo "0")
+    case "$bs_state" in
+      complete)
+        check_pass "$label — bootstrap complete (${bs_indexed} files, ${bs_chunks} chunks)"
+        ;;
+      running)
+        check_warn "$label — bootstrap in progress"
+        echo -e "    ${DIM}→ Bootstrap is currently running. Check: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        ;;
+      queued)
+        check_warn "$label — bootstrap queued (not yet started)"
+        echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        ;;
+      waiting_for_memgraph)
+        check_warn "$label — bootstrap waiting for Memgraph${bs_error:+ ($bs_error)}"
+        echo -e "    ${DIM}→ Start Memgraph then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        ;;
+      waiting_for_ollama_model)
+        check_warn "$label — bootstrap waiting for Ollama model${bs_error:+ ($bs_error)}"
+        echo -e "    ${DIM}→ Run: ollama pull qwen3-embedding  then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        ;;
+      failed)
+        check_fail "$label — bootstrap FAILED${bs_error:+: $bs_error}"
+        echo -e "    ${DIM}→ Retry: node $PI_AGENT_DIR/skills/skill-graph/scripts/index-codebase.js ${target_path} --incremental${RESET}"
+        ;;
+      *)
+        check_warn "$label — unknown bootstrap state: $bs_state"
+        echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        ;;
+    esac
+  else
+    check_warn "$label — no bootstrap record found"
+    echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+  fi
+}
+
+if [[ -d "$bootstrap_dir" ]]; then
+  check_pass "Bootstrap state dir: $bootstrap_dir"
+else
+  check_warn "Bootstrap state dir missing: $bootstrap_dir"
+  echo -e "    ${DIM}→ Self-heal: bash ~/helios-team-installer/install.sh${RESET}"
+fi
+
+# Always check ~/.pi/agent bootstrap state
+check_bootstrap_target "$PI_AGENT_DIR" "~/.pi/agent"
+
+# Check current repo when it's a git repo and != PI_AGENT_DIR
+current_dir="$(pwd)"
+resolved_agent_dir="$(cd "$PI_AGENT_DIR" 2>/dev/null && pwd || echo "$PI_AGENT_DIR")"
+if [[ "$current_dir" != "$resolved_agent_dir" ]] && [[ -d "$current_dir/.git" ]]; then
+  check_bootstrap_target "$current_dir" "$(basename "$current_dir") (CWD)"
 fi
 
 # ─── 9. Ollama ────────────────────────────────────────────────────────────────

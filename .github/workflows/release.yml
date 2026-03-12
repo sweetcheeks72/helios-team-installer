@@ -1,0 +1,148 @@
+# =============================================================================
+# release.yml — GitHub Actions: Build & Release helios-agent tarball
+# =============================================================================
+#
+# Triggers on tag push matching v* (e.g. v1.2.0, v2.0.0-beta.1).
+#
+# This workflow runs IN the installer repo but fetches from the agent repo:
+#   https://github.com/sweetcheeks72/helios-agent
+#
+# Workflow steps:
+#   1. Check out THIS installer repo (for build-release.sh)
+#   2. Check out the helios-agent repo (to ~/.pi/agent equivalent)
+#   3. Run build-release.sh with the tag version
+#   4. Create a GitHub Release with tarball + checksum as assets
+# =============================================================================
+
+name: Release helios-agent
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # Required to create GitHub Releases
+
+jobs:
+  build-and-release:
+    name: Build tarball and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Check out the installer repo (contains build-release.sh)
+      # -----------------------------------------------------------------------
+      - name: Check out installer repo
+        uses: actions/checkout@v4
+        with:
+          path: installer
+
+      # -----------------------------------------------------------------------
+      # 2. Check out the helios-agent source repo
+      #    Clones into the location build-release.sh expects: ~/.pi/agent/
+      # -----------------------------------------------------------------------
+      - name: Check out helios-agent source
+        uses: actions/checkout@v4
+        with:
+          repository: sweetcheeks72/helios-agent
+          path: helios-agent-src
+          # Use a deploy key or PAT if the repo is private:
+          # token: ${{ secrets.HELIOS_AGENT_READ_TOKEN }}
+
+      - name: Install helios-agent to expected location
+        run: |
+          mkdir -p "${HOME}/.pi"
+          cp -r helios-agent-src "${HOME}/.pi/agent"
+          echo "✅ helios-agent installed to ~/.pi/agent/"
+          ls -la "${HOME}/.pi/agent/" | head -20
+
+      # -----------------------------------------------------------------------
+      # 3. Parse version from the git tag (strip leading 'v')
+      # -----------------------------------------------------------------------
+      - name: Resolve release version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "TAG=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "VERSION=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "📌 Tag: ${TAG}  →  Version: ${VERSION}"
+
+      # -----------------------------------------------------------------------
+      # 4. Make build-release.sh executable and run it
+      # -----------------------------------------------------------------------
+      - name: Make build-release.sh executable
+        run: chmod +x installer/build-release.sh
+
+      - name: Build release tarball
+        run: |
+          cd installer
+          ./build-release.sh "${{ steps.version.outputs.VERSION }}"
+
+      # -----------------------------------------------------------------------
+      # 5. Verify the expected artefacts were created
+      # -----------------------------------------------------------------------
+      - name: Verify artefacts
+        id: artefacts
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          TARBALL="installer/dist/helios-agent-v${VERSION}.tar.gz"
+          CHECKSUM="installer/dist/helios-agent-v${VERSION}.tar.gz.sha256"
+
+          if [[ ! -f "${TARBALL}" ]]; then
+            echo "❌ Tarball not found: ${TARBALL}"
+            exit 1
+          fi
+          if [[ ! -f "${CHECKSUM}" ]]; then
+            echo "❌ Checksum not found: ${CHECKSUM}"
+            exit 1
+          fi
+
+          echo "TARBALL=${TARBALL}" >> "${GITHUB_OUTPUT}"
+          echo "CHECKSUM=${CHECKSUM}" >> "${GITHUB_OUTPUT}"
+
+          echo "✅ Tarball:  ${TARBALL}  ($(du -sh "${TARBALL}" | cut -f1))"
+          echo "✅ Checksum: ${CHECKSUM} ($(du -sh "${CHECKSUM}" | cut -f1))"
+          cat "${CHECKSUM}"
+
+      # -----------------------------------------------------------------------
+      # 6. Create the GitHub Release and upload assets
+      # -----------------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "helios-agent ${{ github.ref_name }}"
+          body: |
+            ## helios-agent ${{ github.ref_name }}
+
+            ### Installation
+            Download the tarball and verify the checksum before installing:
+
+            ```bash
+            # Download
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz.sha256
+
+            # Verify checksum (Linux)
+            sha256sum -c helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz.sha256
+
+            # Verify checksum (macOS)
+            shasum -a 256 -c helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz.sha256
+
+            # Extract
+            tar -xzf helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz
+            ```
+
+            Then run `install.sh` from the installer repo to complete setup.
+
+            ---
+            Built from [sweetcheeks72/helios-agent](https://github.com/sweetcheeks72/helios-agent) at `${{ github.ref_name }}`.
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            ${{ steps.artefacts.outputs.TARBALL }}
+            ${{ steps.artefacts.outputs.CHECKSUM }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

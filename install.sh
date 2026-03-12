@@ -51,7 +51,8 @@ step()    { echo -e "\n${BOLD}${CYAN}▶ $*${RESET}"; }
 ask()     { echo -en "${MAGENTA}  ? ${RESET}$* "; }
 
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HELIOS_AGENT_REPO="github.com/sweetcheeks72/helios-agent"
+HELIOS_RELEASE_URL="https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download"
+HELIOS_AGENT_TARBALL="helios-agent.tar.gz"
 FAMILIAR_REPO="github.com/sweetcheeks72/familiar"  # NOTE: verify this URL
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
@@ -243,29 +244,136 @@ install_pi() {
   fi
 }
 
-# ─── Helios Agent Repo ────────────────────────────────────────────────────────
+# ─── Helios Agent (Tarball) ───────────────────────────────────────────────────
 setup_helios_agent() {
   step "Helios Agent (~/.pi/agent/)"
 
-  if [[ -d "$PI_AGENT_DIR" ]]; then
-    if [[ -d "$PI_AGENT_DIR/.git" ]]; then
-      info "~/.pi/agent/ already exists (git repo) — pulling latest"
-      run_with_spinner "Updating helios-agent" \
-        git -C "$PI_AGENT_DIR" pull --rebase --autostash || warn "Could not pull — continuing with existing version"
+  # ── Helper: download a file, return non-zero on failure ──────────────────
+  _helios_download() {
+    local url="$1" dest="$2"
+    curl -fsSL --max-time 30 -o "$dest" "$url" 2>/dev/null
+  }
+
+  # ── Update path: ~/.pi/agent/ exists and has a VERSION file ──────────────
+  if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
+    local local_version
+    local_version="$(cat "$PI_AGENT_DIR/VERSION")"
+    info "Installed version: $local_version — checking for updates…"
+
+    local tmp_version
+    tmp_version="$(mktemp)"
+    if ! _helios_download "$HELIOS_RELEASE_URL/VERSION" "$tmp_version"; then
+      warn "Could not reach release server — continuing with existing version"
+      rm -f "$tmp_version"
       return 0
-    elif [[ -L "$PI_AGENT_DIR" ]]; then
-      info "~/.pi/agent/ is a symlink to: $(readlink "$PI_AGENT_DIR")"
-      return 0
-    else
-      warn "~/.pi/agent/ exists but is not a git repo — backing up and re-cloning"
-      mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
     fi
+
+    local remote_version
+    remote_version="$(cat "$tmp_version")"
+    rm -f "$tmp_version"
+
+    if [[ "$local_version" == "$remote_version" ]]; then
+      success "Helios agent is already up to date ($local_version)"
+      return 0
+    fi
+
+    info "Update available: $local_version → $remote_version — downloading…"
+
+    # Backup current install, preserving user files
+    local backup_dir="${PI_AGENT_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp -a "$PI_AGENT_DIR" "$backup_dir"
+    info "Backed up current agent to $backup_dir"
+
+    # Stash user files before extraction
+    local tmp_stash
+    tmp_stash="$(mktemp -d)"
+    for preserve in .env settings.json governance sessions; do
+      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
+    done
+
+    # Download and extract new tarball
+    local tmp_tarball
+    tmp_tarball="$(mktemp)"
+    if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL" "$tmp_tarball"; then
+      warn "Tarball download failed — rolling back to existing version"
+      rm -rf "$tmp_stash" "$tmp_tarball"
+      return 0
+    fi
+
+    rm -rf "$PI_AGENT_DIR"
+    mkdir -p "$PI_AGENT_DIR"
+    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+      warn "Tarball extraction failed — restoring backup"
+      rm -rf "$PI_AGENT_DIR"
+      cp -a "$backup_dir" "$PI_AGENT_DIR"
+      rm -rf "$tmp_stash" "$tmp_tarball"
+      return 0
+    fi
+    rm -f "$tmp_tarball"
+
+    # Restore user files
+    for preserve in .env settings.json governance sessions; do
+      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
+    done
+    rm -rf "$tmp_stash"
+
+    success "Helios agent updated to $remote_version"
+    return 0
+  fi
+
+  # ── Symlink: leave untouched ──────────────────────────────────────────────
+  if [[ -L "$PI_AGENT_DIR" ]]; then
+    info "~/.pi/agent/ is a symlink to: $(readlink "$PI_AGENT_DIR") — skipping"
+    return 0
+  fi
+
+  # ── Fresh install ─────────────────────────────────────────────────────────
+  info "Fresh install — downloading helios-agent tarball…"
+
+  local tmp_tarball tmp_checksum
+  tmp_tarball="$(mktemp)"
+  tmp_checksum="$(mktemp)"
+
+  if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL" "$tmp_tarball"; then
+    warn "Tarball download failed — skipping helios-agent install"
+    rm -f "$tmp_tarball" "$tmp_checksum"
+    return 0
+  fi
+
+  if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
+    warn "Checksum file download failed — skipping helios-agent install"
+    rm -f "$tmp_tarball" "$tmp_checksum"
+    return 0
+  fi
+
+  # Verify SHA256
+  local expected_sha actual_sha
+  expected_sha="$(awk '{print $1}' "$tmp_checksum")"
+  if command -v sha256sum &>/dev/null; then
+    actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
+  elif command -v shasum &>/dev/null; then
+    actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
+  else
+    warn "No sha256 tool found — skipping checksum verification"
+    actual_sha="$expected_sha"
+  fi
+
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    warn "SHA256 mismatch (expected $expected_sha, got $actual_sha) — aborting install"
+    rm -f "$tmp_tarball" "$tmp_checksum"
+    return 0
   fi
 
   mkdir -p "$HOME/.pi"
-  run_with_spinner "Cloning helios-agent → ~/.pi/agent/" \
-    git clone "https://$HELIOS_AGENT_REPO.git" "$PI_AGENT_DIR"
-  success "Helios agent cloned to $PI_AGENT_DIR"
+  mkdir -p "$PI_AGENT_DIR"
+  if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+    warn "Tarball extraction failed — skipping helios-agent install"
+    rm -rf "$PI_AGENT_DIR" "$tmp_tarball" "$tmp_checksum"
+    return 0
+  fi
+
+  rm -f "$tmp_tarball" "$tmp_checksum"
+  success "Helios agent installed to $PI_AGENT_DIR"
 }
 
 # ─── Helios CLI Command ──────────────────────────────────────────────────────

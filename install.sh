@@ -287,7 +287,7 @@ setup_helios_agent() {
     # Stash user files before extraction
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions; do
+    for preserve in .env settings.json governance sessions .helios; do
       [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
     done
 
@@ -302,7 +302,7 @@ setup_helios_agent() {
 
     rm -rf "$PI_AGENT_DIR"
     mkdir -p "$PI_AGENT_DIR"
-    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"$LOG_FILE"; then
       warn "Tarball extraction failed — restoring backup"
       rm -rf "$PI_AGENT_DIR"
       cp -a "$backup_dir" "$PI_AGENT_DIR"
@@ -312,7 +312,7 @@ setup_helios_agent() {
     rm -f "$tmp_tarball"
 
     # Restore user files
-    for preserve in .env settings.json governance sessions; do
+    for preserve in .env settings.json governance sessions .helios; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
     done
     rm -rf "$tmp_stash"
@@ -349,7 +349,7 @@ setup_helios_agent() {
     # Replace git install with tarball
     rm -rf "$PI_AGENT_DIR"
     mkdir -p "$PI_AGENT_DIR"
-    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"$LOG_FILE"; then
       warn "Tarball extraction failed — restoring git backup"
       rm -rf "$PI_AGENT_DIR"
       cp -a "$backup_dir" "$PI_AGENT_DIR"
@@ -385,13 +385,13 @@ setup_helios_agent() {
   if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL" "$tmp_tarball"; then
     warn "Tarball download failed — skipping helios-agent install"
     rm -f "$tmp_tarball" "$tmp_checksum"
-    return 0
+    return 1
   fi
 
   if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
     warn "Checksum file download failed — skipping helios-agent install"
     rm -f "$tmp_tarball" "$tmp_checksum"
-    return 0
+    return 1
   fi
 
   # Verify SHA256
@@ -409,15 +409,15 @@ setup_helios_agent() {
   if [[ "$actual_sha" != "$expected_sha" ]]; then
     warn "SHA256 mismatch (expected $expected_sha, got $actual_sha) — aborting install"
     rm -f "$tmp_tarball" "$tmp_checksum"
-    return 0
+    return 1
   fi
 
   mkdir -p "$HOME/.pi"
   mkdir -p "$PI_AGENT_DIR"
-  if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+  if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"$LOG_FILE"; then
     warn "Tarball extraction failed — skipping helios-agent install"
     rm -rf "$PI_AGENT_DIR" "$tmp_tarball" "$tmp_checksum"
-    return 0
+    return 1
   fi
 
   rm -f "$tmp_tarball" "$tmp_checksum"
@@ -1315,7 +1315,10 @@ main() {
   detect_update_mode "$@"
   check_prerequisites
   install_pi
-  setup_helios_agent
+  setup_helios_agent || {
+    error "Helios agent setup failed — cannot continue"
+    exit 1
+  }
   install_helios_cli
 
   if [[ "$UPDATE_MODE" == false ]]; then

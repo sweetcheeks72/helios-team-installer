@@ -276,7 +276,7 @@ fi
 section "8. Memgraph"
 
 mg_running=""
-for name in helios-memgraph familiar-graph-1; do
+for name in memgraph helios-memgraph familiar-graph-1; do
   if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
     mg_running="$name"
     break

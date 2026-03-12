@@ -209,3 +209,38 @@ if 'exit 1' not in main_body:
 @test "select_provider uses additive merge" {
   grep -qiE 'additive' "$INSTALLER_DIR/install.sh"
 }
+
+# ---------------------------------------------------------------------------
+# 11. Memgraph container resolution includes legacy fallback familiar-graph-1
+# ---------------------------------------------------------------------------
+@test "container resolution loop includes familiar-graph-1 fallback" {
+  # The for-loop that checks for existing containers must include legacy name
+  grep -qE 'for name in.+familiar-graph-1' "$INSTALLER_DIR/install.sh"
+}
+
+# ---------------------------------------------------------------------------
+# 12. Runtime contract persistence is present in install.sh
+# ---------------------------------------------------------------------------
+@test "persist_runtime_contract function exists in install.sh" {
+  grep -q 'persist_runtime_contract' "$INSTALLER_DIR/install.sh"
+}
+
+@test "install.sh references memgraph.env runtime contract path" {
+  grep -q 'memgraph.env' "$INSTALLER_DIR/install.sh"
+}
+
+@test "mg_running detection covers familiar-graph-1" {
+  # The schema-apply step must also handle the legacy container name
+  # (i.e., it should NOT be a bare grep-E "^memgraph$" any more)
+  python3 -c "
+import sys
+with open('$INSTALLER_DIR/install.sh') as f:
+    content = f.read()
+# Bad pattern: grep -E that only matches memgraph and NOT familiar-graph-1 in the schema-apply block
+import re
+bad = re.search(r'grep\s+-[qE]+\s+[\'\"]\^memgraph\\\$[\'\"]\s', content)
+if bad:
+    print('ERROR: bare grep for ^memgraph$ still present — legacy name not handled')
+    sys.exit(1)
+"
+}

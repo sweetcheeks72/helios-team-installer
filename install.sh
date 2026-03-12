@@ -321,6 +321,54 @@ setup_helios_agent() {
     return 0
   fi
 
+  # ── Migration: git-based install → tarball ─────────────────────────────────
+  if [[ -d "$PI_AGENT_DIR/.git" ]]; then
+    info "Detected git-based install — migrating to tarball distribution…"
+
+    # Stash user files
+    local tmp_stash
+    tmp_stash="$(mktemp -d)"
+    for preserve in .env settings.json governance sessions .helios; do
+      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
+    done
+
+    # Backup the full git install
+    local backup_dir="${PI_AGENT_DIR}.git-backup.$(date +%Y%m%d_%H%M%S)"
+    cp -a "$PI_AGENT_DIR" "$backup_dir"
+    info "Backed up git install to $backup_dir"
+
+    # Download latest tarball
+    local tmp_tarball
+    tmp_tarball="$(mktemp)"
+    if ! _helios_download "$HELIOS_RELEASE_URL/helios-agent-latest.tar.gz" "$tmp_tarball"; then
+      warn "Tarball download failed — keeping git-based install"
+      rm -rf "$tmp_stash" "$tmp_tarball"
+      return 0
+    fi
+
+    # Replace git install with tarball
+    rm -rf "$PI_AGENT_DIR"
+    mkdir -p "$PI_AGENT_DIR"
+    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>/dev/null; then
+      warn "Tarball extraction failed — restoring git backup"
+      rm -rf "$PI_AGENT_DIR"
+      cp -a "$backup_dir" "$PI_AGENT_DIR"
+      rm -rf "$tmp_stash" "$tmp_tarball"
+      return 0
+    fi
+    rm -f "$tmp_tarball"
+
+    # Restore user files
+    for preserve in .env settings.json governance sessions .helios; do
+      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
+    done
+    rm -rf "$tmp_stash"
+
+    success "Migrated from git to tarball distribution ($(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo 'unknown'))"
+    info "Git backup preserved at: $backup_dir"
+    return 0
+  fi
+
   # ── Symlink: leave untouched ──────────────────────────────────────────────
   if [[ -L "$PI_AGENT_DIR" ]]; then
     info "~/.pi/agent/ is a symlink to: $(readlink "$PI_AGENT_DIR") — skipping"

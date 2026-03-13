@@ -1538,7 +1538,7 @@ run_verification() {
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     local configured_provider
     configured_provider=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('defaultProvider','?'))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
-      node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'?')" 2>/dev/null || echo "?")
+      node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).defaultProvider||'?')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "?")
     success "settings.json: provider=$configured_provider"
   fi
 
@@ -1634,8 +1634,8 @@ detect_update_mode() {
       current_provider=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultProvider',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
       current_model=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultModel',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
     elif command -v node &>/dev/null; then
-      current_provider=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'')" 2>/dev/null || echo "")
-      current_model=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultModel||'')" 2>/dev/null || echo "")
+      current_provider=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).defaultProvider||'')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
+      current_model=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).defaultModel||'')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
     else
       # Last resort: grep for the key (handles simple cases)
       current_provider=$(grep -o '"defaultProvider"[[:space:]]*:[[:space:]]*"[^"]*"' "$PI_AGENT_DIR/settings.json" 2>/dev/null | head -1 | sed 's/.*: *"//;s/"//' || echo "")
@@ -1700,7 +1700,7 @@ schedule_bootstrap() {
   for target_path in "${targets[@]}"; do
     local status_key
     status_key=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])" "$target_path" 2>/dev/null || \
-                 node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update('$target_path').digest('hex').slice(0,16))" 2>/dev/null || echo "")
+                 node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update(process.argv[1]).digest('hex').slice(0,16))" -- "$target_path" 2>/dev/null || echo "")
     if [[ -z "$status_key" ]]; then
       warn "Cannot compute status key for $target_path — skipping"
       all_queued=false

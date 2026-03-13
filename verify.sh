@@ -216,7 +216,8 @@ if [[ -f "$env_file" ]]; then
   check_pass ".env file exists"
   
   # Check for required keys based on provider
-  provider=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultProvider','?'))" 2>/dev/null || echo "?")
+  provider=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('defaultProvider','?'))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
+    node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.defaultProvider||'?')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "?")
   
   check_key() {
     local key="$1"
@@ -244,9 +245,12 @@ else
 fi
 
 if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
-  provider=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultProvider','?'))" 2>/dev/null || echo "?")
-  model=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultModel','?'))" 2>/dev/null || echo "?")
-  pkg_count=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(len(d.get('packages',[])))" 2>/dev/null || echo "?")
+  provider=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('defaultProvider','?'))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
+    node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.defaultProvider||'?')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "?")
+  model=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('defaultModel','?'))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
+    node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.defaultModel||'?')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "?")
+  pkg_count=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(len(d.get('packages',[])))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
+    node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log((d.packages||[]).length)" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "?")
   check_pass "settings.json: provider=$provider, model=$model, packages=$pkg_count"
 else
   check_fail "settings.json not found in $PI_AGENT_DIR"
@@ -313,7 +317,7 @@ else
   if command -v docker &>/dev/null; then
     check_warn "Memgraph not running — start with: cd ~/.pi/agent/proxies/memgraph && docker compose up -d"
   else
-    check_warn "Docker not installed — Memgraph unavailable"
+    check_warn "No container runtime (OrbStack/Docker) — Memgraph unavailable"
   fi
 fi
 
@@ -349,18 +353,23 @@ check_bootstrap_target() {
   local target_path="$1"
   local label="$2"
   local status_key
-  status_key=$(python3 -c "import hashlib; print(hashlib.sha256('$target_path'.encode()).hexdigest()[:16])" 2>/dev/null || true)
+  status_key=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])" "$target_path" 2>/dev/null || \
+    node -e "const c=require('crypto');console.log(c.createHash('sha256').update(process.argv[1]).digest('hex').slice(0,16))" -- "$target_path" 2>/dev/null || echo "")
   if [[ -z "$status_key" ]]; then
-    check_warn "$label — cannot compute status key (python3 required)"
+    check_warn "$label — cannot compute status key (python3/node required)"
     return
   fi
   local status_file="$bootstrap_dir/${status_key}.json"
   if [[ -f "$status_file" ]]; then
     local bs_state bs_error bs_indexed bs_chunks
-    bs_state=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('state','?'))" 2>/dev/null || echo "?")
-    bs_error=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('error') or '')" 2>/dev/null || echo "")
-    bs_indexed=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('indexedFiles',0))" 2>/dev/null || echo "0")
-    bs_chunks=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('totalChunks',0))" 2>/dev/null || echo "0")
+    bs_state=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('state','?'))" "$status_file" 2>/dev/null || \
+      node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.state||'?')" -- "$status_file" 2>/dev/null || echo "?")
+    bs_error=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('error') or '')" "$status_file" 2>/dev/null || \
+      node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.error||'')" -- "$status_file" 2>/dev/null || echo "")
+    bs_indexed=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('indexedFiles',0))" "$status_file" 2>/dev/null || \
+      node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.indexedFiles||0)" -- "$status_file" 2>/dev/null || echo "0")
+    bs_chunks=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('totalChunks',0))" "$status_file" 2>/dev/null || \
+      node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(d.totalChunks||0)" -- "$status_file" 2>/dev/null || echo "0")
     case "$bs_state" in
       complete)
         check_pass "$label — bootstrap complete (${bs_indexed} files, ${bs_chunks} chunks)"
@@ -466,11 +475,13 @@ else
 fi
 
 if [[ -f "$PI_AGENT_DIR/mcp.json" ]]; then
-  mcp_count=$(python3 -c "import json;d=json.load(open('$PI_AGENT_DIR/mcp.json'));print(len(d.get('mcpServers',{})))" 2>/dev/null || echo "0")
+  mcp_count=$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(len(d.get('mcpServers',{})))" "$PI_AGENT_DIR/mcp.json" 2>/dev/null || \
+    node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); console.log(Object.keys(d.mcpServers||{}).length)" -- "$PI_AGENT_DIR/mcp.json" 2>/dev/null || echo "0")
   check_pass "mcp.json: $mcp_count server(s) configured"
   # Verify specific servers
   for server in memgraph github figma-remote; do
-    if python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/mcp.json')); assert '$server' in d.get('mcpServers',{})" 2>/dev/null; then
+    if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert sys.argv[2] in d.get('mcpServers',{})" "$PI_AGENT_DIR/mcp.json" "$server" 2>/dev/null || \
+       node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.exit((process.argv[2] in (d.mcpServers||{}))?0:1)" -- "$PI_AGENT_DIR/mcp.json" "$server" 2>/dev/null; then
       check_pass "  → $server server configured"
     else
       check_warn "  → $server server missing from mcp.json"
@@ -490,7 +501,8 @@ else
 fi
 
 if [[ -f "$PI_AGENT_DIR/dep-allowlist.json" ]]; then
-  if python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/dep-allowlist.json')); assert 'neo4j-driver' in d.get('packages',[])" 2>/dev/null; then
+  if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert 'neo4j-driver' in d.get('packages',[])" "$PI_AGENT_DIR/dep-allowlist.json" 2>/dev/null || \
+     node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.exit((d.packages||[]).includes('neo4j-driver')?0:1)" -- "$PI_AGENT_DIR/dep-allowlist.json" 2>/dev/null; then
     check_pass "dep-allowlist.json (neo4j-driver allowed)"
   else
     check_warn "dep-allowlist.json missing neo4j-driver entry"

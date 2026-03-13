@@ -987,7 +987,8 @@ setup_ollama() {
   fi
 
   # Pull required embedding models
-  for model in granite-embedding qwen3-embedding; do
+  # nomic-embed-text is primary (274MB, native 768d), granite-embedding is fallback (62MB)
+  for model in nomic-embed-text granite-embedding; do
     if ollama list 2>/dev/null | grep -q "$model"; then
       success "$model model ready"
     else
@@ -1581,6 +1582,167 @@ print('queued: ' + target)
   fi
 }
 
+# ─── Optional System Dependencies ─────────────────────────────────────────────
+install_optional_deps() {
+  step "Optional Dependencies"
+
+  # ffmpeg — needed for video processing, surf-cli, yt-dlp
+  if command -v ffmpeg &>/dev/null; then
+    success "ffmpeg $(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')"
+  else
+    info "Installing ffmpeg (video processing, surf-cli)..."
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
+      brew install ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually — brew install ffmpeg"
+    elif command -v apt-get &>/dev/null; then
+      sudo apt-get install -y ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually"
+    else
+      warn "ffmpeg not found — install manually for video features"
+    fi
+  fi
+
+  # yt-dlp — needed for YouTube video/transcript features
+  if command -v yt-dlp &>/dev/null; then
+    success "yt-dlp $(yt-dlp --version 2>/dev/null)"
+  else
+    info "Installing yt-dlp (YouTube video/transcript)..."
+    if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
+      brew install yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || true
+    elif command -v pipx &>/dev/null; then
+      pipx install yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || warn "yt-dlp: install manually"
+    elif command -v pip3 &>/dev/null; then
+      pip3 install --user yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || warn "yt-dlp: install manually — pip3 install --user yt-dlp"
+    else
+      warn "yt-dlp not found — install manually for YouTube features"
+    fi
+  fi
+
+  # Vector dimension migration (ensures Memgraph schema_version=2)
+  local fix_script="$PI_AGENT_DIR/scripts/fix-vector-dimensions.sh"
+  if [[ -f "$fix_script" ]] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    if docker ps --format '{{.Names}}' | grep -q "^memgraph$" 2>/dev/null; then
+      bash "$fix_script" >> "$LOG_FILE" 2>&1 && info "Vector dimensions verified" || true
+    fi
+  fi
+
+  # Engineering familiar skill (symlink from agent repo)
+  local fam_eng="$HOME/.familiar/skills/engineering"
+  if [[ ! -e "$fam_eng" ]] && [[ -d "$PI_AGENT_DIR/skills/engineering" ]]; then
+    mkdir -p "$HOME/.familiar/skills"
+    ln -sfn "$PI_AGENT_DIR/skills/engineering" "$fam_eng"
+    success "engineering familiar skill (symlinked)"
+  elif [[ -e "$fam_eng" ]]; then
+    success "engineering familiar skill (exists)"
+  fi
+}
+
+# ─── Boot Services (LaunchAgents / cron) ──────────────────────────────────────
+setup_boot_services() {
+  step "Boot Services"
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    local la_dir="$HOME/Library/LaunchAgents"
+    mkdir -p "$la_dir"
+
+    # Memgraph auto-start on login
+    local mg_plist="$la_dir/com.helios.memgraph.plist"
+    if [[ ! -f "$mg_plist" ]]; then
+      local docker_path
+      docker_path=$(command -v docker 2>/dev/null || echo "/usr/local/bin/docker")
+      cat > "$mg_plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.helios.memgraph</string>
+  <key>ProgramArguments</key>
+  <array><string>${docker_path}</string><string>start</string><string>memgraph</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/helios-memgraph.log</string>
+  <key>StandardErrorPath</key><string>/tmp/helios-memgraph.err</string>
+</dict>
+</plist>
+PLIST_EOF
+      launchctl bootstrap "gui/$(id -u)" "$mg_plist" 2>/dev/null || launchctl load -w "$mg_plist" 2>/dev/null
+      success "Memgraph LaunchAgent"
+    else success "Memgraph LaunchAgent (exists)"; fi
+
+    # Skill-graph daily ingestion at 2 AM
+    local sg_plist="$la_dir/com.helios.skill-graph-daily.plist"
+    if [[ ! -f "$sg_plist" ]]; then
+      cat > "$sg_plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.helios.skill-graph-daily</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${HOME}/.pi/agent/scripts/ingest-session-decisions.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>2</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>${HOME}/.pi/agent/.skill-graph-daily.log</string>
+  <key>StandardErrorPath</key><string>${HOME}/.pi/agent/.skill-graph-daily.err</string>
+</dict>
+</plist>
+PLIST_EOF
+      launchctl bootstrap "gui/$(id -u)" "$sg_plist" 2>/dev/null || launchctl load -w "$sg_plist" 2>/dev/null
+      success "Skill-graph daily LaunchAgent"
+    else success "Skill-graph daily LaunchAgent (exists)"; fi
+
+    # Session consolidation (hourly)
+    local con_plist="$la_dir/com.helios.consolidation.plist"
+    if [[ ! -f "$con_plist" ]]; then
+      if [[ -f "$PI_AGENT_DIR/scripts/com.helios.consolidation.plist" ]]; then
+        cp "$PI_AGENT_DIR/scripts/com.helios.consolidation.plist" "$con_plist"
+      else
+        cat > "$con_plist" << PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.helios.consolidation</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${HOME}/.pi/agent/scripts/consolidate-sessions.sh</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>StandardOutPath</key><string>${HOME}/.pi/agent/.consolidation.log</string>
+  <key>StandardErrorPath</key><string>${HOME}/.pi/agent/.consolidation.err</string>
+</dict>
+</plist>
+PLIST_EOF
+      fi
+      launchctl bootstrap "gui/$(id -u)" "$con_plist" 2>/dev/null || launchctl load -w "$con_plist" 2>/dev/null
+      success "Session consolidation LaunchAgent"
+    else success "Session consolidation LaunchAgent (exists)"; fi
+
+    # Ollama: skip if already managed by Ollama.app
+    if launchctl list 2>/dev/null | grep -q "com.ollama"; then
+      success "Ollama auto-start (managed by Ollama.app)"
+    else
+      info "Ollama: install via Ollama.app for auto-start, or manage manually"
+    fi
+
+  elif [[ "$(uname -s)" == "Linux" ]]; then
+    # Docker restart policy (already in compose, but ensure)
+    docker update --restart=unless-stopped memgraph 2>/dev/null && success "Memgraph restart policy" || true
+
+    # Ollama systemd
+    if command -v systemctl &>/dev/null; then
+      systemctl --user enable ollama 2>/dev/null && success "Ollama systemd enabled" || true
+    fi
+
+    # Cron for skill-graph daily
+    if ! crontab -l 2>/dev/null | grep -q "skill-graph"; then
+      (crontab -l 2>/dev/null; echo "0 2 * * * ${HOME}/.pi/agent/scripts/ingest-session-decisions.sh >> ${HOME}/.pi/agent/.skill-graph-daily.log 2>&1") | crontab -
+      success "Skill-graph daily cron"
+    else success "Skill-graph daily cron (exists)"; fi
+  fi
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
   print_banner
@@ -1605,6 +1767,8 @@ main() {
   setup_memgraph        # Docker + Memgraph + schema + 12GB cap
   setup_ollama          # Ollama + embedding models (skips already-pulled)
   setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
+  install_optional_deps # ffmpeg, yt-dlp, vector dimension fix
+  setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
   schedule_bootstrap    # Queue + launch codebase indexing in background
 
   if [[ "$UPDATE_MODE" == false ]]; then

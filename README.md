@@ -41,7 +41,7 @@ bash ~/helios-team-installer/install.sh --fresh   # re-run full setup (re-prompt
 | **20 Git Packages** | Extensions for subagents, coordination, design deck, web access, etc. |
 | **5 Local Extensions** | Governance, codebase-index, subagent-mesh, MCP startup, inline-enforce |
 | **Memgraph** | Knowledge graph — Docker container, schema, 12GB memory cap |
-| **Ollama** | Local embeddings — granite-embedding + qwen3-embedding models |
+| **Ollama** | Local embeddings — nomic-embed-text (primary, 768d) + granite-embedding (fallback) |
 | **MCP Servers** | Memgraph (via uvx), GitHub, Figma (via npx) |
 | **HEMA** | Episodic memory — neo4j-driver, ingest-episodes.js, memory-recall.js |
 | **Provider Config** | settings.json wired to Anthropic, Bedrock, or OpenAI |
@@ -94,8 +94,8 @@ bash ~/helios-team-installer/install.sh --fresh   # re-run full setup (re-prompt
 ┌───▼────────────┐ ┌──────▼──────┐  ┌──────────▼──┐  ┌─────────▼─────┐
 │  AI Provider   │ │  MCP Servers│  │  Memgraph   │  │   Ollama      │
 │                │ │             │  │  (Docker)   │  │               │
-│  Anthropic     │ │  memgraph   │  │  Bolt :7687 │  │  granite-emb  │
-│  Bedrock       │ │  GitHub     │  │  Lab  :7444 │  │  qwen3-emb    │
+│  Anthropic     │ │  memgraph   │  │  Bolt :7687 │  │  nomic-embed  │
+│  Bedrock       │ │  GitHub     │  │  Lab  :7444 │  │  granite-emb  │
 │  OpenAI        │ │  Figma      │  │  12GB cap   │  │  :11434       │
 └────────────────┘ └─────────────┘  └─────────────┘  └───────────────┘
 ```

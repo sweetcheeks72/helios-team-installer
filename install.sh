@@ -5,6 +5,7 @@
 # Installs: Pi CLI, Helios Agent, 20 git packages, extensions, Familiar skills,
 # API key setup
 # =============================================================================
+INSTALLER_VERSION="2.1.0"
 
 set -euo pipefail
 
@@ -12,6 +13,8 @@ set -euo pipefail
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
+      echo "Helios Team Installer v${INSTALLER_VERSION}"
+      echo ""
       echo "Usage: bash install.sh [options]"
       echo ""
       echo "Options:"
@@ -53,15 +56,20 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+# Respect NO_COLOR (https://no-color.org/) and dumb terminals
+if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
+  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' BOLD='' DIM='' RESET=''
+else
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  BLUE='\033[0;34m'
+  CYAN='\033[0;36m'
+  MAGENTA='\033[0;35m'
+  BOLD='\033[1m'
+  DIM='\033[2m'
+  RESET='\033[0m'
+fi
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 info()    { echo -e "${BLUE}  ℹ ${RESET}$*"; }
@@ -1554,7 +1562,7 @@ run_verification() {
 print_quickstart() {
   echo ""
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-  echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET}"
+  echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
   # Ensure PATH is set for remainder of installer + user session

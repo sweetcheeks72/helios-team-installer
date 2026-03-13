@@ -118,7 +118,21 @@ if [[ -d "$FAMILIAR_DIR" ]]; then
   fi
 fi
 
-# ─── 5. Shell Profile Note ────────────────────────────────────────────────────
+# ─── 5. LaunchAgent Cleanup ───────────────────────────────────────────────────
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  echo ""
+  echo -e "  ${BOLD}LaunchAgents${RESET}"
+  for plist in com.helios.memgraph com.helios.skill-graph-daily com.helios.consolidation com.helios.improvement-lab; do
+    local pfile="$HOME/Library/LaunchAgents/${plist}.plist"
+    if [[ -f "$pfile" ]]; then
+      launchctl bootout "gui/$(id -u)" "$pfile" 2>/dev/null || launchctl unload "$pfile" 2>/dev/null
+      rm -f "$pfile"
+      success "Removed $plist"
+    fi
+  done
+fi
+
+# ─── 6. Shell Profile Note ────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BOLD}Note on API Keys:${RESET}"
 echo -e "  ${DIM}API keys set in shell profiles (e.g., ~/.zshrc, ~/.bashrc) were NOT removed.${RESET}"

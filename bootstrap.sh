@@ -98,7 +98,9 @@ echo ""
 # ─── Clone or update installer ───────────────────────────────────────────────
 if [ -d "$INSTALLER_DIR/.git" ]; then
   echo -e "  ${CYAN}ℹ${RESET} Installer already exists — pulling latest..."
-  git -C "$INSTALLER_DIR" pull --rebase --autostash -q 2>/dev/null || true
+  if ! git -C "$INSTALLER_DIR" pull --rebase --autostash -q 2>/dev/null; then
+    echo -e "  ${YELLOW}⚠${RESET} Could not pull latest — using existing version"
+  fi
 else
   if [ -d "$INSTALLER_DIR" ]; then
     echo -e "  ${YELLOW}⚠${RESET} $INSTALLER_DIR exists but isn't a git repo — backing up"

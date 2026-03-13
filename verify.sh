@@ -379,7 +379,7 @@ check_bootstrap_target() {
         ;;
       waiting_for_ollama_model)
         check_warn "$label — bootstrap waiting for Ollama model${bs_error:+ ($bs_error)}"
-        echo -e "    ${DIM}→ Run: ollama pull qwen3-embedding  then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        echo -e "    ${DIM}→ Run: ollama pull nomic-embed-text  then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
         ;;
       failed)
         check_fail "$label — bootstrap FAILED${bs_error:+: $bs_error}"
@@ -420,7 +420,7 @@ if command -v ollama &>/dev/null; then
   check_pass "Ollama installed"
   if curl -sf http://localhost:11434/api/tags &>/dev/null; then
     check_pass "Ollama running"
-    for model in granite-embedding qwen3-embedding; do
+    for model in nomic-embed-text granite-embedding; do
       if ollama list 2>/dev/null | grep -q "$model"; then
         check_pass "$model model"
       else

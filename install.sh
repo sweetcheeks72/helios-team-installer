@@ -292,7 +292,8 @@ setup_helios_agent() {
     # Stash user files before extraction
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl; do
+    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
+                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json; do
       [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
     done
 
@@ -340,7 +341,8 @@ setup_helios_agent() {
     rm -f "$tmp_tarball"
 
     # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl; do
+    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
+                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
     done
     rm -rf "$tmp_stash"
@@ -360,7 +362,8 @@ setup_helios_agent() {
     # Stash user files
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl; do
+    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
+                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json; do
       [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
     done
 
@@ -413,7 +416,8 @@ setup_helios_agent() {
     rm -f "$tmp_tarball"
 
     # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl; do
+    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
+                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
     done
     rm -rf "$tmp_stash"
@@ -608,7 +612,11 @@ select_provider() {
 
   # MERGE provider config into existing settings.json (don't overwrite!)
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
-    python3 -c "
+    local merge_ok=false
+
+    # Try python3 first
+    if command -v python3 &>/dev/null && python3 -c "import json" 2>/dev/null; then
+      python3 -c "
 import json, sys
 
 with open('$PI_AGENT_DIR/settings.json') as f:
@@ -671,11 +679,46 @@ with open('$PI_AGENT_DIR/settings.json', 'w') as f:
     f.write('\n')
 
 print('Merged provider config into existing settings.json')
-" || {
-      error "python3 JSON merge failed — settings.json NOT overwritten"
-      warn "Run 'python3 --version' to check your Python installation"
-      warn "You may need to manually edit ~/.pi/agent/settings.json"
-    }
+" && merge_ok=true || true
+    fi
+
+    # Fallback to node if python3 failed
+    if [[ "$merge_ok" == false ]] && command -v node &>/dev/null; then
+      node -e "
+const fs = require('fs');
+const existing = JSON.parse(fs.readFileSync('$PI_AGENT_DIR/settings.json', 'utf8'));
+const template = JSON.parse(fs.readFileSync('$PROVIDER_CONFIG', 'utf8'));
+existing.defaultProvider = template.defaultProvider;
+existing.defaultModel = template.defaultModel;
+existing.assistantName = template.assistantName || existing.assistantName || 'Helios';
+// Merge enabledModels (additive union)
+const tModels = new Set(template.enabledModels || []);
+const eModels = new Set(existing.enabledModels || []);
+existing.enabledModels = [...new Set([...eModels, ...tModels])].sort();
+// Merge skills (additive union by name)
+const pkgKey = (p) => typeof p === 'string' ? p : (p.name || p.source || JSON.stringify(p));
+const eSkillKeys = new Set((existing.skills || []).map(pkgKey));
+for (const s of (template.skills || [])) { if (!eSkillKeys.has(pkgKey(s))) (existing.skills = existing.skills || []).push(s); }
+// Merge packages (additive union by name)
+const ePkgKeys = new Set((existing.packages || []).map(pkgKey));
+for (const p of (template.packages || [])) { if (!ePkgKeys.has(pkgKey(p))) (existing.packages = existing.packages || []).push(p); }
+// Merge extensions (additive union)
+const eExtKeys = new Set(existing.extensions || []);
+for (const e of (template.extensions || [])) { if (!eExtKeys.has(e)) (existing.extensions = existing.extensions || []).push(e); }
+// Preserve boolean settings from template
+for (const k of ['enableSkillCommands','hideThinkingBlock','quietStartup']) {
+  if (template[k] !== undefined && existing[k] === undefined) existing[k] = template[k];
+}
+fs.writeFileSync('$PI_AGENT_DIR/settings.json', JSON.stringify(existing, null, 2) + '\n');
+console.log('Merged provider config via node fallback');
+" && merge_ok=true || true
+    fi
+
+    if [[ "$merge_ok" == false ]]; then
+      warn "JSON merge failed (python3 and node both unavailable or errored)"
+      warn "Copying provider template as settings.json"
+      cp "$PROVIDER_CONFIG" "$PI_AGENT_DIR/settings.json"
+    fi
   else
     # No existing settings.json — use template as-is
     cp "$PROVIDER_CONFIG" "$PI_AGENT_DIR/settings.json"
@@ -697,8 +740,11 @@ install_skill_deps() {
     success "neo4j-driver + tree-sitter already installed"
   else
     run_with_spinner "Installing neo4j-driver + tree-sitter" \
-      bash -c "cd '$sg_dir' && npm install --legacy-peer-deps --no-audit --no-fund" || \
+      bash -c "cd '$sg_dir' && npm install --legacy-peer-deps --no-audit --no-fund 2>&1" || {
       warn "Dependency install failed — HEMA memory and code parsing will be limited"
+      info "Installing neo4j-driver + tree-sitter — see $LOG_FILE for details"
+      info "You can retry: cd '$sg_dir' && npm install --legacy-peer-deps"
+    }
   fi
 }
 
@@ -768,7 +814,8 @@ setup_dep_allowlist() {
   local allowlist="$PI_AGENT_DIR/dep-allowlist.json"
   if [[ -f "$allowlist" ]]; then
     # Verify it contains neo4j-driver
-    if python3 -c "
+    local allowlist_ok=false
+    if command -v python3 &>/dev/null && python3 -c "
 import json
 with open('$allowlist') as f:
     data = json.load(f)
@@ -783,6 +830,21 @@ if 'neo4j-driver' not in pkgs:
 else:
     print('ok')
 " 2>/dev/null; then
+      allowlist_ok=true
+    elif command -v node &>/dev/null && node -e "
+const fs = require('fs');
+const data = JSON.parse(fs.readFileSync('$allowlist', 'utf8'));
+const pkgs = data.packages || [];
+if (!pkgs.includes('neo4j-driver')) {
+  pkgs.push('neo4j-driver');
+  data.packages = pkgs;
+  fs.writeFileSync('$allowlist', JSON.stringify(data, null, 2) + '\n');
+  console.log('added');
+} else { console.log('ok'); }
+" 2>/dev/null; then
+      allowlist_ok=true
+    fi
+    if [[ "$allowlist_ok" == true ]]; then
       success "dep-allowlist.json verified"
     else
       warn "Could not verify dep-allowlist.json"
@@ -862,13 +924,30 @@ persist_runtime_contract() {
 setup_memgraph() {
   step "Memgraph (Knowledge Graph)"
 
-  # Check Docker
-  if ! command -v docker &>/dev/null; then
-    warn "Container runtime (OrbStack/Docker) not installed — Memgraph will be skipped"
-    info "Install OrbStack: https://orbstack.dev — or Docker"
+  # Check container runtime (OrbStack, Docker, Colima, etc.)
+  local container_runtime=""
+  if command -v orb &>/dev/null || command -v orbctl &>/dev/null; then
+    container_runtime="OrbStack"
+    # OrbStack provides docker CLI — ensure it's available
+    if ! command -v docker &>/dev/null; then
+      warn "OrbStack detected but 'docker' CLI not on PATH"
+      info "Run: orb setup docker"
+      info "Then re-run the installer to set up Memgraph"
+      return 0
+    fi
+  elif command -v docker &>/dev/null; then
+    container_runtime="Docker"
+  fi
+
+  if [[ -z "$container_runtime" ]]; then
+    warn "No container runtime found — Memgraph will be skipped"
+    info "Install OrbStack (recommended): https://orbstack.dev"
+    info "Or Docker Engine / Colima / Podman"
     info "Then re-run the installer to set up Memgraph"
     return 0
   fi
+
+  success "Container runtime: $container_runtime"
 
   if ! docker info &>/dev/null 2>&1; then
     warn "Container runtime (OrbStack/Docker) is installed but not running — start OrbStack (or your container runtime)"
@@ -949,20 +1028,15 @@ setup_memgraph() {
 
 # ─── Ollama (Local Embeddings) ────────────────────────────────────────────────
 setup_ollama() {
-  step "Ollama (Local Embeddings)"
+  step "Ollama (Local Embeddings — nomic-embed-text)"
 
   if ! command -v ollama &>/dev/null; then
-    info "Installing Ollama (required for local embeddings)..."
-    if curl -fsSL https://ollama.com/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
-      success "Ollama installed"
-    else
-      warn "Ollama auto-install failed"
-      info "Install manually: https://ollama.com"
-      return 0
-    fi
-  else
-    success "Ollama installed"
+    info "Ollama not found — skipping local embeddings"
+    info "To enable semantic search later: brew install ollama && ollama pull nomic-embed-text"
+    return 0
   fi
+
+  success "Ollama installed"
 
   # Ensure Ollama is running
   if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
@@ -1298,6 +1372,54 @@ setup_familiar() {
   info "See: ~/.familiar/skills/gmcli/SKILL.md for OAuth configuration instructions."
 }
 
+# ─── Deduplicate Skills & Extensions ──────────────────────────────────────────
+dedup_skills_extensions() {
+  step "Deduplicating Skills & Extensions"
+
+  local conflicts=0
+
+  # Remove legacy ~/.familiar/skills that duplicate ~/.pi/agent/skills
+  if [[ -d "$FAMILIAR_DIR/skills" ]] && [[ -d "$PI_AGENT_DIR/skills" ]]; then
+    for familiar_skill in "$FAMILIAR_DIR/skills"/*/SKILL.md; do
+      [[ -f "$familiar_skill" ]] || continue
+      local skill_name
+      skill_name=$(basename "$(dirname "$familiar_skill")")
+      if [[ -d "$PI_AGENT_DIR/skills/$skill_name" ]]; then
+        info "Removing duplicate skill from ~/.familiar/skills/$skill_name (already in ~/.pi/agent/skills/)"
+        rm -rf "$FAMILIAR_DIR/skills/$skill_name"
+        ((conflicts++)) || true
+      fi
+    done
+  fi
+
+  # Remove duplicate extension directories when both local and git-package versions exist
+  if [[ -d "$PI_AGENT_DIR/extensions" ]] && [[ -d "$PI_AGENT_DIR/git" ]]; then
+    for ext_dir in "$PI_AGENT_DIR/extensions"/*/; do
+      [[ -d "$ext_dir" ]] || continue
+      local ext_name
+      ext_name=$(basename "$ext_dir")
+      # Check if same extension exists as a git package (match package root only: dir/$ext_name/package.json)
+      local git_ext
+      git_ext=$(find "$PI_AGENT_DIR/git" -maxdepth 4 -type d -name "$ext_name" 2>/dev/null | while read -r d; do
+        if [[ -f "$d/package.json" ]] && [[ -f "$d/index.ts" || -f "$d/index.js" ]]; then
+          echo "$d"; break
+        fi
+      done)
+      if [[ -n "$git_ext" ]]; then
+        info "Removing duplicate extension ~/.pi/agent/extensions/$ext_name/ (installed as git package)"
+        rm -rf "$ext_dir"
+        ((conflicts++)) || true
+      fi
+    done
+  fi
+
+  if [[ "$conflicts" -gt 0 ]]; then
+    success "Cleaned up $conflicts duplicate skill/extension registration(s)"
+  else
+    success "No duplicates found"
+  fi
+}
+
 # ─── Verification ─────────────────────────────────────────────────────────────
 run_verification() {
   step "Verification"
@@ -1368,7 +1490,8 @@ run_verification() {
   # settings.json
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     local configured_provider
-    configured_provider=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultProvider','?'))" 2>/dev/null || echo "?")
+    configured_provider=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultProvider','?'))" 2>/dev/null || \
+      node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'?')" 2>/dev/null || echo "?")
     success "settings.json: provider=$configured_provider"
   fi
 
@@ -1394,6 +1517,13 @@ print_quickstart() {
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+  # Ensure PATH is set for remainder of installer + user session
+  if ! command -v helios &>/dev/null && [[ -f "$HOME/.local/bin/helios" ]]; then
+    export PATH="$HOME/.local/bin:$PATH"
+    echo ""
+    warn "Run 'source ~/.zshrc' (or restart terminal) for the 'helios' command to work"
+  fi
   echo ""
   echo -e "  ${BOLD}Quick Start:${RESET}"
   echo ""
@@ -1425,9 +1555,9 @@ print_quickstart() {
   echo ""
   if [[ -f "$PI_AGENT_DIR/.env" ]]; then
     local keys_missing
-    keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || true)
-    keys_missing=$(echo "$keys_missing" | tr -d '[:space:]')
-    keys_missing=${keys_missing:-0}
+    keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || echo "0")
+    keys_missing="${keys_missing//[^0-9]/}"
+    keys_missing="${keys_missing:-0}"
     if [ "$keys_missing" -gt 0 ] 2>/dev/null; then
       echo -e "  ${YELLOW}⚠ ${keys_missing} API key(s) not yet set. Edit: ${DIM}~/.pi/agent/.env${RESET}"
     fi
@@ -1444,6 +1574,7 @@ detect_update_mode() {
   # --fresh flag forces full interactive setup
   for arg in "$@"; do
     [[ "$arg" == "--fresh" ]] && return 0
+    [[ "$arg" == "--update" ]] && { UPDATE_MODE=true; return 0; }
   done
 
   # If agent dir exists with a configured provider and .env, this is an update
@@ -1799,6 +1930,7 @@ main() {
     setup_familiar      # Interactive: optional Familiar install
   fi
 
+  dedup_skills_extensions
   run_verification
   print_quickstart
 

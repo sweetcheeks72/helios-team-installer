@@ -8,6 +8,27 @@
 
 set -euo pipefail
 
+# ─── Early arg check (before tty redirect) ───────────────────────────────────
+for _arg in "$@"; do
+  case "$_arg" in
+    --help|-h)
+      echo "Usage: bash install.sh [options]"
+      echo ""
+      echo "Options:"
+      echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
+      echo "  --update   Run in update mode (skip interactive prompts)"
+      echo "  --help     Show this help message"
+      echo ""
+      echo "First install (team members):"
+      echo "  curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+      echo ""
+      echo "Re-run / update:"
+      echo "  helios update"
+      exit 0
+      ;;
+  esac
+done
+
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
 # Reopen stdin from /dev/tty so interactive `read` commands work.
@@ -63,6 +84,7 @@ LOG_FILE="$INSTALLER_DIR/install.log"
 # still reach the terminal so error messages (including the cleanup trap) are visible.
 if touch "$LOG_FILE" 2>/dev/null; then
   exec > >(tee -a "$LOG_FILE")
+  trap '' PIPE  # Ignore SIGPIPE so script continues if tee dies
   # stderr stays on the terminal — cleanup trap errors will always be visible
 else
   echo -e "${YELLOW}  ⚠ ${RESET}Cannot write to $LOG_FILE — continuing without log file"
@@ -118,14 +140,17 @@ stop_spinner() {
 run_with_spinner() {
   local msg="$1"; shift
   start_spinner "$msg"
-  if "$@" >> "$LOG_FILE" 2>&1; then
-    stop_spinner
+  "$@" >> "$LOG_FILE" 2>&1 &
+  local cmd_pid=$!
+  wait $cmd_pid
+  local cmd_exit=$?
+  stop_spinner
+  if [[ $cmd_exit -eq 0 ]]; then
     success "$msg"
     return 0
   else
-    stop_spinner
     error "$msg — see $LOG_FILE for details"
-    return 1
+    return $cmd_exit
   fi
 }
 
@@ -260,6 +285,11 @@ setup_helios_agent() {
   }
 
   # ── Update path: ~/.pi/agent/ exists and has a VERSION file ──────────────
+  if [[ -e "$PI_AGENT_DIR" ]] && [[ ! -d "$PI_AGENT_DIR" ]]; then
+    warn "~/.pi/agent/ exists but is not a directory — backing up"
+    mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.file-backup.$(date +%s)"
+  fi
+
   if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
     local local_version
     local_version="$(cat "$PI_AGENT_DIR/VERSION")"
@@ -522,7 +552,7 @@ install_helios_cli() {
   [[ -f "$HOME/.bashrc" ]] && [[ ! -f "$HOME/.zshrc" ]] && shell_rc="$HOME/.bashrc"
   if ! grep -q '\.local/bin' "$shell_rc" 2>/dev/null; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
-    success "Added ~/.local/bin to PATH in $(basename $shell_rc)"
+    success "Added ~/.local/bin to PATH in $(basename "$shell_rc")"
   fi
   export PATH="$HOME/.local/bin:$PATH"
   info "Restart your terminal or run: source ~/.zshrc"
@@ -579,7 +609,7 @@ select_provider() {
   echo -e "     ${DIM}Best for: OpenAI preference, GPT models.${RESET}"
   echo ""
   ask "Selection [1-3] (default: 1):"
-  read -r provider_choice
+  read -t 30 -r provider_choice || provider_choice=""
   provider_choice="${provider_choice:-1}"
 
   case "$provider_choice" in
@@ -619,9 +649,9 @@ select_provider() {
       python3 -c "
 import json, sys
 
-with open('$PI_AGENT_DIR/settings.json') as f:
+with open(sys.argv[1]) as f:
     existing = json.load(f)
-with open('$PROVIDER_CONFIG') as f:
+with open(sys.argv[2]) as f:
     template = json.load(f)
 
 # Only merge provider-specific fields
@@ -674,12 +704,12 @@ existing.setdefault('enableSkillCommands', True)
 existing.setdefault('hideThinkingBlock', False)
 existing['quietStartup'] = existing.get('quietStartup', template.get('quietStartup', True))
 
-with open('$PI_AGENT_DIR/settings.json', 'w') as f:
+with open(sys.argv[1], 'w') as f:
     json.dump(existing, f, indent=2)
     f.write('\n')
 
 print('Merged provider config into existing settings.json')
-" && merge_ok=true || true
+" "$PI_AGENT_DIR/settings.json" "$PROVIDER_CONFIG" && merge_ok=true || true
     fi
 
     # Fallback to node if python3 failed
@@ -772,6 +802,10 @@ install_git_hooks() {
   step "Git Hooks"
 
   local hooks_dir="$PI_AGENT_DIR/.git/hooks"
+  if [[ ! -d "$PI_AGENT_DIR/.git" ]]; then
+    info "Tarball install — git hooks not applicable"
+    return 0
+  fi
   if [[ ! -d "$hooks_dir" ]]; then
     info "No .git/hooks directory — skipping"
     return 0
@@ -816,20 +850,20 @@ setup_dep_allowlist() {
     # Verify it contains neo4j-driver
     local allowlist_ok=false
     if command -v python3 &>/dev/null && python3 -c "
-import json
-with open('$allowlist') as f:
+import json, sys
+with open(sys.argv[1]) as f:
     data = json.load(f)
 pkgs = data.get('packages', [])
 if 'neo4j-driver' not in pkgs:
     pkgs.append('neo4j-driver')
     data['packages'] = pkgs
-    with open('$allowlist', 'w') as f:
+    with open(sys.argv[1], 'w') as f:
         json.dump(data, f, indent=2)
         f.write('\n')
     print('added')
 else:
     print('ok')
-" 2>/dev/null; then
+" "$allowlist" 2>/dev/null; then
       allowlist_ok=true
     elif command -v node &>/dev/null && node -e "
 const fs = require('fs');
@@ -1041,8 +1075,12 @@ setup_ollama() {
   # Ensure Ollama is running
   if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
     info "Starting Ollama..."
-    nohup ollama serve >> "$LOG_FILE" 2>&1 &
-    disown 2>/dev/null || true
+    if pgrep -x ollama &>/dev/null || launchctl list 2>/dev/null | grep -q com.ollama; then
+      success "Ollama already running (managed by system)"
+    else
+      nohup ollama serve >> "$LOG_FILE" 2>&1 &
+      disown 2>/dev/null || true
+    fi
     # Wait with retry loop (up to 15s)
     local ollama_ready=false
     for i in {1..15}; do
@@ -1065,7 +1103,7 @@ setup_ollama() {
   # Pull required embedding models
   # nomic-embed-text is primary (274MB, native 768d), granite-embedding is fallback (62MB)
   for model in nomic-embed-text granite-embedding; do
-    if ollama list 2>/dev/null | grep -q "$model"; then
+    if ollama list 2>/dev/null | awk '{print $1}' | grep -q "^${model}:"; then
       success "$model model ready"
     else
       run_with_spinner "Pulling $model (this may take a few minutes)" \
@@ -1110,7 +1148,7 @@ setup_mcp_servers() {
   local mcp_file="$PI_AGENT_DIR/mcp.json"
   if [[ -f "$mcp_file" ]]; then
     local server_count
-    server_count=$(python3 -c "import json; print(len(json.load(open('$mcp_file')).get('mcpServers',{})))" 2>/dev/null || echo "0")
+    server_count=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('mcpServers',{})))" "$mcp_file" 2>/dev/null || echo "0")
     if [[ "$server_count" -ge 3 ]]; then
       success "mcp.json configured ($server_count servers)"
     else
@@ -1125,8 +1163,8 @@ setup_mcp_servers() {
 _write_mcp_json() {
   local mcp_file="$1"
   python3 -c "
-import json, os
-target = '$mcp_file'
+import json, os, sys
+target = sys.argv[1]
 servers = {
     'figma-remote': {
         'transport': 'http',
@@ -1167,7 +1205,7 @@ if os.path.exists(target):
 with open(target, 'w') as f:
     json.dump(mcp, f, indent=2)
     f.write('\n')
-" 2>/dev/null && success "mcp.json written (figma-remote, memgraph, github)" || warn "Could not write mcp.json"
+" "$mcp_file" 2>/dev/null && success "mcp.json written (figma-remote, memgraph, github)" || warn "Could not write mcp.json"
 }
 
 # ─── API Key Setup ────────────────────────────────────────────────────────────
@@ -1208,7 +1246,7 @@ setup_api_keys() {
     [[ "$required" == "recommended" ]] && label="${YELLOW}[recommended]${RESET}"
 
     ask "$key_name $label — $description:"
-    read -rs key_val
+    read -t 30 -rs key_val || key_val=""
     echo ""  # newline after silent read
 
     if [[ -n "$key_val" ]]; then
@@ -1232,7 +1270,7 @@ setup_api_keys() {
       prompt_key "AWS_SECRET_ACCESS_KEY" "from AWS IAM Console" "required"
       echo ""
       ask "AWS_DEFAULT_REGION (default: us-east-1):"
-      read -r aws_region
+      read -t 30 -r aws_region || aws_region=""
       aws_region="${aws_region:-us-east-1}"
       grep -v "^AWS_DEFAULT_REGION=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
       printf '%s=%s\n' "AWS_DEFAULT_REGION" "${aws_region}" >> "${env_file}.tmp"
@@ -1317,7 +1355,7 @@ setup_familiar() {
 
   echo ""
   ask "Install Familiar skills? (Gmail, Calendar, Drive, transcription) [y/N]:"
-  read -r install_familiar
+  read -t 30 -r install_familiar || install_familiar=""
   install_familiar="${install_familiar:-n}"
 
   if [[ ! "$install_familiar" =~ ^[Yy]$ ]]; then
@@ -1337,7 +1375,7 @@ setup_familiar() {
   info "Cloning Familiar → ~/.familiar/"
   echo ""
   ask "Proceed with clone? [y/N]:"
-  read -r confirm_familiar
+  read -t 30 -r confirm_familiar || confirm_familiar=""
   if [[ ! "$confirm_familiar" =~ ^[Yy]$ ]]; then
     warn "Familiar setup skipped"
     return 0
@@ -1357,7 +1395,7 @@ setup_familiar() {
   if [[ -f "$FAMILIAR_DIR/pnpm-lock.yaml" ]]; then
     if command -v pnpm &>/dev/null; then
       ask "Run pnpm install for Familiar dependencies? [y/N]:"
-      read -r run_pnpm
+      read -t 30 -r run_pnpm || run_pnpm=""
       if [[ "$run_pnpm" =~ ^[Yy]$ ]]; then
         run_with_spinner "Installing Familiar dependencies" \
           pnpm --dir "$FAMILIAR_DIR" install || warn "pnpm install had issues"
@@ -1490,7 +1528,7 @@ run_verification() {
   # settings.json
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     local configured_provider
-    configured_provider=$(python3 -c "import json; d=json.load(open('$PI_AGENT_DIR/settings.json')); print(d.get('defaultProvider','?'))" 2>/dev/null || \
+    configured_provider=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('defaultProvider','?'))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || \
       node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'?')" 2>/dev/null || echo "?")
     success "settings.json: provider=$configured_provider"
   fi
@@ -1584,8 +1622,8 @@ detect_update_mode() {
 
     # Try python3 first, fall back to node, fall back to grep
     if command -v python3 &>/dev/null; then
-      current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider',''))" 2>/dev/null || echo "")
-      current_model=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultModel',''))" 2>/dev/null || echo "")
+      current_provider=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultProvider',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
+      current_model=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultModel',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
     elif command -v node &>/dev/null; then
       current_provider=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultProvider||'')" 2>/dev/null || echo "")
       current_model=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PI_AGENT_DIR/settings.json','utf8')).defaultModel||'')" 2>/dev/null || echo "")
@@ -1652,7 +1690,7 @@ schedule_bootstrap() {
   local all_queued=true
   for target_path in "${targets[@]}"; do
     local status_key
-    status_key=$(python3 -c "import hashlib; print(hashlib.sha256('$target_path'.encode()).hexdigest()[:16])" 2>/dev/null || \
+    status_key=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])" "$target_path" 2>/dev/null || \
                  node -e "const c=require('crypto');process.stdout.write(c.createHash('sha256').update('$target_path').digest('hex').slice(0,16))" 2>/dev/null || echo "")
     if [[ -z "$status_key" ]]; then
       warn "Cannot compute status key for $target_path — skipping"
@@ -1663,16 +1701,16 @@ schedule_bootstrap() {
 
     # Only write queued if not already running/complete
     local existing_state=""
-    existing_state=$(python3 -c "import json; d=json.load(open('$status_file')); print(d.get('state',''))" 2>/dev/null || echo "")
+    existing_state=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('state',''))" "$status_file" 2>/dev/null || echo "")
     if [[ "$existing_state" == "running" ]] || [[ "$existing_state" == "complete" ]]; then
       info "Bootstrap already $existing_state for $target_path — keeping"
       continue
     fi
 
     python3 -c "
-import json, datetime, os
-target = '$target_path'
-sf = '$status_file'
+import json, datetime, os, sys
+target = sys.argv[1]
+sf = sys.argv[2]
 now = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
 existing = {}
 if os.path.exists(sf):
@@ -1696,7 +1734,7 @@ with open(sf, 'w') as f:
     json.dump(existing, f, indent=2)
     f.write('\n')
 print('queued: ' + target)
-" 2>/dev/null && info "Queued bootstrap: $target_path" || {
+" "$target_path" "$status_file" 2>/dev/null && info "Queued bootstrap: $target_path" || {
       warn "Failed to write bootstrap state for $target_path"
       all_queued=false
     }
@@ -1733,6 +1771,7 @@ deduplicate_extensions() {
     local local_ext="$PI_AGENT_DIR/extensions/$ext"
     local git_ext="$PI_AGENT_DIR/git/github.com/nicobailon/$ext"
     if [[ -d "$local_ext" ]] && [[ -d "$git_ext" ]]; then
+      info "Removing duplicate: $local_ext (git package $git_ext takes precedence)"
       rm -rf "$local_ext"
       success "Removed duplicate local extension: $ext (git package takes precedence)"
     fi
@@ -1897,6 +1936,26 @@ PLIST_EOF
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
+  for arg in "$@"; do
+    case "$arg" in
+      --help|-h)
+        echo "Usage: bash install.sh [options]"
+        echo ""
+        echo "Options:"
+        echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
+        echo "  --update   Run in update mode (skip interactive prompts)"
+        echo "  --help     Show this help message"
+        echo ""
+        echo "First install (team members):"
+        echo "  curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+        echo ""
+        echo "Re-run / update:"
+        echo "  helios update"
+        exit 0
+        ;;
+    esac
+  done
+
   print_banner
   detect_update_mode "$@"
   check_prerequisites

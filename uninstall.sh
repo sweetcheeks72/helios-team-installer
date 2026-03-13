@@ -118,7 +118,15 @@ if [[ -d "$FAMILIAR_DIR" ]]; then
   fi
 fi
 
-# ─── 5. LaunchAgent Cleanup ───────────────────────────────────────────────────
+# ─── 5. Docker / Memgraph Cleanup ────────────────────────────────────────────
+if command -v docker &>/dev/null; then
+  echo "  Stopping Memgraph container..."
+  docker stop memgraph 2>/dev/null || true
+  docker rm memgraph 2>/dev/null || true
+  echo "  Removed Memgraph container"
+fi
+
+# ─── 6. LaunchAgent Cleanup ───────────────────────────────────────────────────
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo ""
   echo -e "  ${BOLD}LaunchAgents${RESET}"
@@ -132,7 +140,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   done
 fi
 
-# ─── 6. Shell Profile Note ────────────────────────────────────────────────────
+# ─── 7. Shell Profile Note ────────────────────────────────────────────────────
 echo ""
 echo -e "  ${BOLD}Note on API Keys:${RESET}"
 echo -e "  ${DIM}API keys set in shell profiles (e.g., ~/.zshrc, ~/.bashrc) were NOT removed.${RESET}"

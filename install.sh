@@ -5,6 +5,7 @@
 # Installs: Pi CLI, Helios Agent, 20 git packages, extensions, Familiar skills,
 # API key setup
 # =============================================================================
+INSTALLER_VERSION="2.1.0"
 
 set -euo pipefail
 
@@ -12,6 +13,8 @@ set -euo pipefail
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
+      echo "Helios Team Installer v${INSTALLER_VERSION}"
+      echo ""
       echo "Usage: bash install.sh [options]"
       echo ""
       echo "Options:"
@@ -53,15 +56,20 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+# Respect NO_COLOR (https://no-color.org/) and dumb terminals
+if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
+  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' MAGENTA='' BOLD='' DIM='' RESET=''
+else
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  BLUE='\033[0;34m'
+  CYAN='\033[0;36m'
+  MAGENTA='\033[0;35m'
+  BOLD='\033[1m'
+  DIM='\033[2m'
+  RESET='\033[0m'
+fi
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 info()    { echo -e "${BLUE}  ℹ ${RESET}$*"; }
@@ -716,8 +724,8 @@ print('Merged provider config into existing settings.json')
     if [[ "$merge_ok" == false ]] && command -v node &>/dev/null; then
       node -e "
 const fs = require('fs');
-const existing = JSON.parse(fs.readFileSync('$PI_AGENT_DIR/settings.json', 'utf8'));
-const template = JSON.parse(fs.readFileSync('$PROVIDER_CONFIG', 'utf8'));
+const existing = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const template = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 existing.defaultProvider = template.defaultProvider;
 existing.defaultModel = template.defaultModel;
 existing.assistantName = template.assistantName || existing.assistantName || 'Helios';
@@ -732,16 +740,16 @@ for (const s of (template.skills || [])) { if (!eSkillKeys.has(pkgKey(s))) (exis
 // Merge packages (additive union by name)
 const ePkgKeys = new Set((existing.packages || []).map(pkgKey));
 for (const p of (template.packages || [])) { if (!ePkgKeys.has(pkgKey(p))) (existing.packages = existing.packages || []).push(p); }
-// Merge extensions (additive union)
-const eExtKeys = new Set(existing.extensions || []);
-for (const e of (template.extensions || [])) { if (!eExtKeys.has(e)) (existing.extensions = existing.extensions || []).push(e); }
+// Merge extensions (additive union by key)
+const eExtKeys = new Set((existing.extensions || []).map(pkgKey));
+for (const e of (template.extensions || [])) { if (!eExtKeys.has(pkgKey(e))) (existing.extensions = existing.extensions || []).push(e); }
 // Preserve boolean settings from template
 for (const k of ['enableSkillCommands','hideThinkingBlock','quietStartup']) {
   if (template[k] !== undefined && existing[k] === undefined) existing[k] = template[k];
 }
-fs.writeFileSync('$PI_AGENT_DIR/settings.json', JSON.stringify(existing, null, 2) + '\n');
+fs.writeFileSync(process.argv[1], JSON.stringify(existing, null, 2) + '\n');
 console.log('Merged provider config via node fallback');
-" && merge_ok=true || true
+" -- "$PI_AGENT_DIR/settings.json" "$PROVIDER_CONFIG" && merge_ok=true || true
     fi
 
     if [[ "$merge_ok" == false ]]; then
@@ -867,15 +875,16 @@ else:
       allowlist_ok=true
     elif command -v node &>/dev/null && node -e "
 const fs = require('fs');
-const data = JSON.parse(fs.readFileSync('$allowlist', 'utf8'));
+const p = process.argv[1];
+const data = JSON.parse(fs.readFileSync(p, 'utf8'));
 const pkgs = data.packages || [];
 if (!pkgs.includes('neo4j-driver')) {
   pkgs.push('neo4j-driver');
   data.packages = pkgs;
-  fs.writeFileSync('$allowlist', JSON.stringify(data, null, 2) + '\n');
+  fs.writeFileSync(p, JSON.stringify(data, null, 2) + '\n');
   console.log('added');
 } else { console.log('ok'); }
-" 2>/dev/null; then
+" -- "$allowlist" 2>/dev/null; then
       allowlist_ok=true
     fi
     if [[ "$allowlist_ok" == true ]]; then
@@ -1553,7 +1562,7 @@ run_verification() {
 print_quickstart() {
   echo ""
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-  echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET}"
+  echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 
   # Ensure PATH is set for remainder of installer + user session

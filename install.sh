@@ -183,6 +183,11 @@ check_prerequisites() {
     missing+=("python3")
   fi
 
+  if [[ "$(uname -s)" == "Darwin" ]] && ! xcode-select -p &>/dev/null; then
+    warn "Xcode Command Line Tools not installed — native deps may fail"
+    info "Fix: xcode-select --install"
+  fi
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo ""
     error "Missing required prerequisites: ${missing[*]}"
@@ -506,10 +511,17 @@ install_helios_cli() {
   ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
   if [[ "$installed" == false ]]; then
     success "helios → ~/.local/bin/helios"
-    if ! echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin"; then
-      warn "Add to your shell config: export PATH=\"\$HOME/.local/bin:\$PATH\""
-    fi
   fi
+
+  # Add to PATH in shell profile if not already there
+  local shell_rc="$HOME/.zshrc"
+  [[ -f "$HOME/.bashrc" ]] && [[ ! -f "$HOME/.zshrc" ]] && shell_rc="$HOME/.bashrc"
+  if ! grep -q '\.local/bin' "$shell_rc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
+    success "Added ~/.local/bin to PATH in $(basename $shell_rc)"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+  info "Restart your terminal or run: source ~/.zshrc"
 
 
   # Also symlink fd if present and not already in PATH
@@ -852,14 +864,14 @@ setup_memgraph() {
 
   # Check Docker
   if ! command -v docker &>/dev/null; then
-    warn "Docker not installed — Memgraph will be skipped"
-    info "Install OrbStack (recommended): https://orbstack.dev — or another container runtime (Colima, Docker Engine)"
+    warn "Container runtime (OrbStack/Docker) not installed — Memgraph will be skipped"
+    info "Install OrbStack: https://orbstack.dev — or Docker"
     info "Then re-run the installer to set up Memgraph"
     return 0
   fi
 
   if ! docker info &>/dev/null 2>&1; then
-    warn "Docker is installed but not running — start OrbStack (or your container runtime)"
+    warn "Container runtime (OrbStack/Docker) is installed but not running — start OrbStack (or your container runtime)"
     info "Then re-run the installer to set up Memgraph"
     return 0
   fi
@@ -940,22 +952,12 @@ setup_ollama() {
   step "Ollama (Local Embeddings)"
 
   if ! command -v ollama &>/dev/null; then
-    echo ""
-    ask "Install Ollama for local embeddings? (required for semantic search) [Y/n]:"
-    read -r install_ollama
-    install_ollama="${install_ollama:-Y}"
-
-    if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
-      info "Installing Ollama..."
-      if curl -fsSL https://ollama.com/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
-        success "Ollama installed"
-      else
-        warn "Ollama auto-install failed"
-        info "Install manually: https://ollama.com"
-        return 0
-      fi
+    info "Installing Ollama (required for local embeddings)..."
+    if curl -fsSL https://ollama.com/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
+      success "Ollama installed"
     else
-      info "Skipping Ollama — semantic search will be unavailable"
+      warn "Ollama auto-install failed"
+      info "Install manually: https://ollama.com"
       return 0
     fi
   else
@@ -1376,6 +1378,14 @@ run_verification() {
   else
     echo -e "  ${YELLOW}${BOLD}⚠ Verification completed with warnings — see above${RESET}"
   fi
+
+  if command -v gh &>/dev/null; then
+    if gh auth status &>/dev/null 2>&1; then
+      success "GitHub CLI authenticated"
+    else
+      warn "GitHub CLI not authenticated — run: gh auth login"
+    fi
+  fi
 }
 
 # ─── Quick-Start Guide ────────────────────────────────────────────────────────
@@ -1415,8 +1425,10 @@ print_quickstart() {
   echo ""
   if [[ -f "$PI_AGENT_DIR/.env" ]]; then
     local keys_missing
-    keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || echo 0)
-    if [[ "$keys_missing" -gt 0 ]]; then
+    keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || true)
+    keys_missing=$(echo "$keys_missing" | tr -d '[:space:]')
+    keys_missing=${keys_missing:-0}
+    if [ "$keys_missing" -gt 0 ] 2>/dev/null; then
       echo -e "  ${YELLOW}⚠ ${keys_missing} API key(s) not yet set. Edit: ${DIM}~/.pi/agent/.env${RESET}"
     fi
   fi
@@ -1582,6 +1594,20 @@ print('queued: ' + target)
   fi
 }
 
+# ─── Deduplicate Extensions ───────────────────────────────────────────────────
+deduplicate_extensions() {
+  step "Deduplicating Extensions"
+  local dominated_exts=("pi-review-loop")
+  for ext in "${dominated_exts[@]}"; do
+    local local_ext="$PI_AGENT_DIR/extensions/$ext"
+    local git_ext="$PI_AGENT_DIR/git/github.com/nicobailon/$ext"
+    if [[ -d "$local_ext" ]] && [[ -d "$git_ext" ]]; then
+      rm -rf "$local_ext"
+      success "Removed duplicate local extension: $ext (git package takes precedence)"
+    fi
+  done
+}
+
 # ─── Optional System Dependencies ─────────────────────────────────────────────
 install_optional_deps() {
   step "Optional Dependencies"
@@ -1624,14 +1650,9 @@ install_optional_deps() {
     fi
   fi
 
-  # Engineering familiar skill (symlink from agent repo)
-  local fam_eng="$HOME/.familiar/skills/engineering"
-  if [[ ! -e "$fam_eng" ]] && [[ -d "$PI_AGENT_DIR/skills/engineering" ]]; then
-    mkdir -p "$HOME/.familiar/skills"
-    ln -sfn "$PI_AGENT_DIR/skills/engineering" "$fam_eng"
-    success "engineering familiar skill (symlinked)"
-  elif [[ -e "$fam_eng" ]]; then
-    success "engineering familiar skill (exists)"
+  # Engineering skill (already in agent repo, no symlink needed)
+  if [[ -d "$PI_AGENT_DIR/skills/engineering" ]]; then
+    success "engineering skill (in ~/.pi/agent/skills/)"
   fi
 }
 
@@ -1760,6 +1781,7 @@ main() {
   fi
 
   install_packages
+  deduplicate_extensions
   install_skill_deps    # neo4j-driver, tree-sitter for HEMA
   install_governance_deps  # Governance extension node_modules
   install_git_hooks     # Pre-push hook for branch protection

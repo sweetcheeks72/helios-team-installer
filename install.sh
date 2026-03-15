@@ -396,7 +396,7 @@ setup_helios_agent() {
       info "Bootstrapping git for auto-update..."
       if (cd "$PI_AGENT_DIR" && \
           git init -q && \
-          git remote add origin "https://github.com/sweetcheeks72/helios-agent.git" && \
+          git remote add origin "https://x-access-token:$(gh auth token 2>/dev/null)@github.com/sweetcheeks72/helios-agent.git" && \
           git fetch -q origin main && \
           git reset --mixed origin/main && \
           git branch -M main) 2>>"${LOG_FILE:-/dev/null}"; then

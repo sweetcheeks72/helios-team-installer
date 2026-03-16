@@ -35,8 +35,14 @@ done
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
 # Reopen stdin from /dev/tty so interactive `read` commands work.
-if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
-  exec < /dev/tty || true
+if [[ ! -t 0 ]]; then
+  if [[ -e /dev/tty ]]; then
+    exec < /dev/tty || true
+  else
+    echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
+    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh)" >&2
+    exit 1
+  fi
 fi
 
 cleanup() {
@@ -192,9 +198,9 @@ check_prerequisites() {
     info "Installing Homebrew (required for macOS package management)..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null >> "$LOG_FILE" 2>&1
     # Add brew to PATH for this session
-    if [[ "$arch" == "arm64" ]]; then
+    if [[ -x /opt/homebrew/bin/brew ]]; then
       eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
-    else
+    elif [[ -x /usr/local/bin/brew ]]; then
       eval "$(/usr/local/bin/brew shellenv)" 2>/dev/null || true
     fi
     if command -v brew &>/dev/null; then
@@ -222,6 +228,9 @@ check_prerequisites() {
         brew install "$brew_pkg" >> "$LOG_FILE" 2>&1 ;;
       linux|wsl)
         sudo apt-get install -y "$apt_pkg" >> "$LOG_FILE" 2>&1 ;;
+      *)
+        warn "$cmd: unsupported platform ($platform) — install manually"
+        return 1 ;;
     esac
     command -v "$cmd" &>/dev/null
   }

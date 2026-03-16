@@ -147,6 +147,8 @@ rsync -a \
   --exclude='*.tar.gz' \
   --exclude='.planning/' \
   --exclude='.DS_Store' \
+  --exclude='memgraph-data/' \
+  --exclude='subagent-mesh/' \
   "${SOURCE_DIR}/" \
   "${STAGE_DIR}/"
 

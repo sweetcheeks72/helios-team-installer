@@ -113,7 +113,7 @@ echo "              governance/events.jsonl, governance/inline-enforce.jsonl,"
 echo "              sessions/, .helios/, .backup.*, *.log, *.disabled,"
 echo "              run-history.jsonl, mcp-cache.json, user artifacts"
 
-rsync -a \
+rsync -aL \
   --exclude='.git/' \
   --exclude='node_modules/' \
   --exclude='.env' \
@@ -170,6 +170,29 @@ GOVTPL
 fi
 
 echo "✅ Copy complete"
+
+# ---------------------------------------------------------------------------
+# Post-copy cleanup: remove dev-only files not suitable for distribution
+# ---------------------------------------------------------------------------
+
+echo "🧹 Post-copy cleanup ..."
+
+# hema-dispatch/ is a test/barrel sub-package, not a Pi extension.
+# Pi auto-discovers directories in extensions/ and fails on this one.
+# The real extension hema-dispatch.ts depends on local Memgraph infra — exclude both.
+rm -rf "${STAGE_DIR}/extensions/hema-dispatch/"
+rm -f "${STAGE_DIR}/extensions/hema-dispatch.ts"
+rm -rf "${STAGE_DIR}/extensions/hema-dispatch-lib/"
+rm -f "${STAGE_DIR}/extensions/warm-loop.ts"
+rm -f "${STAGE_DIR}/extensions/session-mesh-bus.ts"
+rm -f "${STAGE_DIR}/extensions/mesh-topology.ts"
+rm -rf "${STAGE_DIR}/extensions/format-preference/"
+
+# Remove test files and backups from extensions
+find "${STAGE_DIR}/extensions" -name "*.test.ts" -delete 2>/dev/null || true
+find "${STAGE_DIR}/extensions" -name "*.bak" -delete 2>/dev/null || true
+
+echo "✅ Cleanup complete"
 
 # ---------------------------------------------------------------------------
 # Write VERSION file

@@ -629,7 +629,7 @@ select_provider() {
   case "$provider_choice" in
     1)
       SELECTED_PROVIDER="anthropic"
-      SELECTED_MODEL="claude-sonnet-4-5-20250514"
+      SELECTED_MODEL="claude-sonnet-4-5"
       PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/anthropic.json"
       success "Selected: Anthropic Direct (claude-sonnet-4-5)"
       ;;
@@ -649,7 +649,7 @@ select_provider() {
     *)
       warn "Invalid selection — defaulting to Anthropic"
       SELECTED_PROVIDER="anthropic"
-      SELECTED_MODEL="claude-sonnet-4-5-20250514"
+      SELECTED_MODEL="claude-sonnet-4-5"
       PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/anthropic.json"
       ;;
   esac
@@ -1429,6 +1429,16 @@ setup_familiar() {
 dedup_skills_extensions() {
   step "Deduplicating Skills & Extensions"
 
+  # Remove legacy local extensions that are now provided as git packages
+  local legacy_exts=("pi-review-loop")
+  for legacy_ext in "${legacy_exts[@]}"; do
+    if [[ -d "$PI_AGENT_DIR/extensions/$legacy_ext" ]] && \
+       [[ -d "$PI_AGENT_DIR/git/github.com/nicobailon/$legacy_ext" ]]; then
+      info "Removing legacy extension $legacy_ext (now provided by git package)"
+      rm -rf "$PI_AGENT_DIR/extensions/$legacy_ext"
+    fi
+  done
+
   local conflicts=0
 
   # Remove legacy ~/.familiar/skills that duplicate ~/.pi/agent/skills
@@ -1611,7 +1621,7 @@ print_quickstart() {
     keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || echo "0")
     keys_missing="${keys_missing//[^0-9]/}"
     keys_missing="${keys_missing:-0}"
-    if [ "$keys_missing" -gt 0 ] 2>/dev/null; then
+    if [[ "${keys_missing:-0}" -gt 0 ]]; then
       echo -e "  ${YELLOW}⚠ ${keys_missing} API key(s) not yet set. Edit: ${DIM}~/.pi/agent/.env${RESET}"
     fi
   fi

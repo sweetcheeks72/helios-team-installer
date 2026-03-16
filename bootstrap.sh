@@ -7,6 +7,41 @@
 
 set -euo pipefail
 
+# ─── Windows Detection — WSL-First Approach ──────────────────────────────────
+# If running in Git Bash, MSYS2, MINGW, or Cygwin on Windows, guide user to WSL.
+detect_windows() {
+  local uname_out
+  uname_out="$(uname -s 2>/dev/null || echo "Unknown")"
+  
+  case "$uname_out" in
+    MINGW*|MSYS*|CYGWIN*)
+      echo ""
+      echo "═══════════════════════════════════════════════════════════════"
+      echo "  Helios requires WSL (Windows Subsystem for Linux)"
+      echo "═══════════════════════════════════════════════════════════════"
+      echo ""
+      echo "  You're running in Git Bash/MSYS — this won't work."
+      echo "  Helios needs a full Linux environment via WSL."
+      echo ""
+      echo "  Quick setup (run in PowerShell as Admin):"
+      echo ""
+      echo "    wsl --install"
+      echo ""
+      echo "  Then restart your computer, open Ubuntu from the Start"
+      echo "  menu, and run:"
+      echo ""
+      echo "    curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+      echo ""
+      echo "  Need help? See: https://learn.microsoft.com/en-us/windows/wsl/install"
+      echo "═══════════════════════════════════════════════════════════════"
+      echo ""
+      exit 1
+      ;;
+  esac
+}
+
+detect_windows
+
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
 # Reopen stdin from /dev/tty so git clone, read, etc. can interact with the user.
@@ -62,14 +97,16 @@ if command -v node &>/dev/null; then
     fail=true
   fi
 else
-  echo -e "  ${RED}✗${RESET} Node.js not found — install from https://nodejs.org or: brew install node"
+  echo -e "  ${RED}✗${RESET} Node.js not found — install from https://nodejs.org"
+  echo -e "      ${DIM}macOS: brew install node | Ubuntu/WSL: sudo apt install nodejs npm${RESET}"
   fail=true
 fi
 
 if command -v git &>/dev/null; then
   echo -e "  ${GREEN}✓${RESET} git $(git --version | awk '{print $3}')"
 else
-  echo -e "  ${RED}✗${RESET} git not found — install with: brew install git"
+  echo -e "  ${RED}✗${RESET} git not found"
+  echo -e "      ${DIM}macOS: brew install git | Ubuntu/WSL: sudo apt install git${RESET}"
   fail=true
 fi
 
@@ -83,7 +120,8 @@ fi
 if command -v python3 &>/dev/null; then
   echo -e "  ${GREEN}✓${RESET} python3 $(python3 --version 2>/dev/null | awk '{print $2}')"
 else
-  echo -e "  ${RED}✗${RESET} python3 not found — install with: xcode-select --install (macOS) or apt install python3"
+  echo -e "  ${RED}✗${RESET} python3 not found"
+  echo -e "      ${DIM}macOS: xcode-select --install | Ubuntu/WSL: sudo apt install python3${RESET}"
   fail=true
 fi
 

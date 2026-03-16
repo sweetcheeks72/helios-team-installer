@@ -55,6 +55,23 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ─── Platform Detection ───────────────────────────────────────────────────────
+is_wsl() {
+  [[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null
+}
+
+current_platform() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    echo "macos"
+  elif is_wsl; then
+    echo "wsl"
+  elif [[ "$(uname -s)" == "Linux" ]]; then
+    echo "linux"
+  else
+    echo "unknown"
+  fi
+}
+
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
 # Respect NO_COLOR (https://no-color.org/) and dumb terminals
 if [[ -n "${NO_COLOR:-}" ]] || [[ "${TERM:-}" == "dumb" ]]; then
@@ -229,6 +246,19 @@ check_prerequisites() {
     echo -e "  • Node.js 18+: https://nodejs.org or ${DIM}brew install node${RESET}"
     echo -e "  • git: ${DIM}brew install git${RESET} or ${DIM}apt install git${RESET}"
     exit 1
+  fi
+
+  # WSL-specific guidance
+  if is_wsl; then
+    echo -e "  ${CYAN}ℹ${RESET}  Running inside WSL — great! Full Linux environment detected."
+    if command -v docker &>/dev/null; then
+      echo -e "  ${GREEN}✓${RESET} Docker available in WSL"
+    else
+      echo -e "  ${YELLOW}⚠${RESET} Docker not found in WSL"
+      echo -e "    ${DIM}Install Docker Desktop for Windows and enable WSL integration:${RESET}"
+      echo -e "    ${DIM}https://docs.docker.com/desktop/wsl/${RESET}"
+    fi
+    echo ""
   fi
 }
 
@@ -1940,6 +1970,47 @@ PLIST_EOF
       success "Ollama auto-start (managed by Ollama.app)"
     else
       info "Ollama: install via Ollama.app for auto-start, or manage manually"
+    fi
+
+  elif is_wsl; then
+    # WSL: no systemd by default, no persistent cron. Use Windows Task Scheduler hints.
+    info "WSL detected — background services work differently here"
+    echo ""
+    echo -e "  ${DIM}WSL doesn't auto-start background services like macOS/Linux.${RESET}"
+    echo -e "  ${DIM}You'll need to start services manually each session:${RESET}"
+    echo ""
+    echo -e "    ${BOLD}# Start Memgraph (if using Docker Desktop):${RESET}"
+    echo -e "    ${DIM}docker start helios-memgraph 2>/dev/null || true${RESET}"
+    echo ""
+    echo -e "    ${BOLD}# Start Ollama:${RESET}"
+    echo -e "    ${DIM}ollama serve &${RESET}"
+    echo ""
+    echo -e "  ${DIM}Tip: Add these to your ~/.bashrc to auto-start on WSL launch.${RESET}"
+    echo ""
+    
+    # Offer to add auto-start to .bashrc
+    local wsl_autostart_marker="# Helios WSL auto-start"
+    if ! grep -q "$wsl_autostart_marker" "$HOME/.bashrc" 2>/dev/null; then
+      ask "Add Helios service auto-start to ~/.bashrc? [y/N]:"
+      read -t 30 -r add_autostart || add_autostart=""
+      if [[ "$add_autostart" =~ ^[Yy]$ ]]; then
+        cat >> "$HOME/.bashrc" << 'WSLSTART'
+
+# Helios WSL auto-start
+# Start Docker containers and Ollama on WSL session launch
+# Start Memgraph if Docker is ready
+if docker info &>/dev/null 2>&1; then
+  (docker start helios-memgraph 2>/dev/null &)
+else
+  echo "[helios] Docker not ready — start Docker Desktop, then: docker start helios-memgraph"
+fi
+# Start Ollama if not already running
+if ! pgrep -x ollama >/dev/null 2>&1; then
+  (nohup ollama serve >> /tmp/ollama.log 2>&1 & disown) 2>/dev/null
+fi
+WSLSTART
+        success "Added Helios auto-start to ~/.bashrc"
+      fi
     fi
 
   elif [[ "$(uname -s)" == "Linux" ]]; then

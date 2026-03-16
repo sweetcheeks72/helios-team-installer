@@ -10,6 +10,23 @@ curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer
 
 This walks you through provider selection, API keys, and installs everything: Pi CLI, Helios agents, extensions, packages, Memgraph, Ollama, and MCP servers.
 
+### Windows
+
+Helios runs inside WSL (Windows Subsystem for Linux):
+
+1. **Install WSL** (PowerShell as Admin):
+   ```powershell
+   wsl --install
+   ```
+2. Restart your computer
+3. Open **Ubuntu** from the Start menu
+4. Run the install command:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
+   ```
+
+> **Prerequisites for WSL:** Docker Desktop with [WSL integration enabled](https://docs.docker.com/desktop/wsl/), Node.js 18+ (install via [nvm](https://github.com/nvm-sh/nvm) or [NodeSource](https://github.com/nodesource/distributions)), git, python3.
+
 📖 **First time?** Read the [full team setup guide](TEAM-SETUP.md) — explains everything from scratch.
 
 ## Update (existing install)

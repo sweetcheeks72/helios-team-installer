@@ -205,6 +205,11 @@ check_prerequisites() {
     fi
   fi
 
+  # ── One-time apt-get update (linux/wsl) ────────────────────────────────────
+  if [[ "$platform" == "linux" ]] || [[ "$platform" == "wsl" ]]; then
+    sudo apt-get update -y >> "$LOG_FILE" 2>&1 || true
+  fi
+
   # ── Helper: install a dependency ───────────────────────────────────────────
   _install_dep() {
     local cmd="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}"
@@ -240,7 +245,7 @@ check_prerequisites() {
       linux|wsl)
         # NodeSource for Node 22 LTS (Ubuntu/Debian)
         if command -v curl &>/dev/null; then
-          curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | sudo -E bash - >> "$LOG_FILE" 2>&1
+          curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | sudo bash - >> "$LOG_FILE" 2>&1
           sudo apt-get install -y nodejs >> "$LOG_FILE" 2>&1
         else
           sudo apt-get update -y >> "$LOG_FILE" 2>&1
@@ -287,11 +292,7 @@ check_prerequisites() {
     info "Installing python3..."
     case "$platform" in
       macos)
-        # Xcode CLT includes python3
-        xcode-select --install 2>/dev/null || true
-        sleep 2
-        # Fallback to brew if xcode-select didn't provide python3
-        command -v python3 &>/dev/null || brew install python3 >> "$LOG_FILE" 2>&1
+        brew install python3 >> "$LOG_FILE" 2>&1
         ;;
       linux|wsl)
         sudo apt-get install -y python3 >> "$LOG_FILE" 2>&1
@@ -331,6 +332,7 @@ check_prerequisites() {
       linux)
         info "Installing Docker CE..."
         if command -v curl &>/dev/null; then
+          info "This will run the Docker install script with sudo permissions"
           curl -fsSL https://get.docker.com 2>/dev/null | sh >> "$LOG_FILE" 2>&1 && {
             sudo usermod -aG docker "$USER" 2>/dev/null || true
             success "Docker CE installed"

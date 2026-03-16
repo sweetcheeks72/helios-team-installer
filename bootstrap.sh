@@ -111,7 +111,7 @@ if [[ "$PLATFORM" == "Darwin" ]] && ! command -v brew &>/dev/null; then
   else
     eval "$(/usr/local/bin/brew shellenv)" 2>/dev/null || true
   fi
-  command -v brew &>/dev/null && echo -e "  ${GREEN}✓${RESET} Homebrew installed" || echo -e "  ${RED}✗${RESET} Homebrew install failed"
+  command -v brew &>/dev/null && echo -e "  ${GREEN}✓${RESET} Homebrew installed" || { echo -e "  ${RED}✗${RESET} Homebrew install failed"; exit 1; }
 fi
 
 # Node.js 18+
@@ -125,11 +125,11 @@ fi
 if [[ "$node_ok" == false ]]; then
   echo -e "  ${CYAN}⬇${RESET}  Installing Node.js..."
   if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
-    brew install node 2>/dev/null
+    brew install node 2>&1
   elif command -v apt-get &>/dev/null; then
     # Use NodeSource for Node 22 LTS on Ubuntu/Debian/WSL
     if command -v curl &>/dev/null; then
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - 2>/dev/null
       sudo apt-get install -y nodejs 2>/dev/null
     else
       sudo apt-get update -y 2>/dev/null && sudo apt-get install -y nodejs npm 2>/dev/null
@@ -144,7 +144,7 @@ if command -v git &>/dev/null; then
 else
   echo -e "  ${CYAN}⬇${RESET}  Installing git..."
   if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
-    brew install git 2>/dev/null
+    brew install git 2>&1
   elif command -v apt-get &>/dev/null; then
     sudo apt-get install -y git 2>/dev/null
   fi
@@ -165,10 +165,7 @@ if command -v python3 &>/dev/null; then
 else
   echo -e "  ${CYAN}⬇${RESET}  Installing python3..."
   if [[ "$PLATFORM" == "Darwin" ]]; then
-    # Xcode CLT includes python3
-    xcode-select --install 2>/dev/null || true
-    # Fallback to brew
-    command -v python3 &>/dev/null || brew install python3 2>/dev/null
+    brew install python3 2>&1
   elif command -v apt-get &>/dev/null; then
     sudo apt-get install -y python3 2>/dev/null
   fi

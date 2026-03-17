@@ -224,7 +224,7 @@ while (-not $ubuntuReady -and $initAttempt -lt $maxInitRetries) {
     Write-Host "  [»] Testing Ubuntu initialization (attempt $initAttempt of $maxInitRetries)..." -ForegroundColor DarkGray
     $testOutput = (& wsl -d Ubuntu -- echo ready 2>&1) -join " "
 
-    if ($testOutput -match "ready") {
+    if ($testOutput.Trim() -eq 'ready') {
         $ubuntuReady = $true
     } else {
         Write-Host ""
@@ -235,7 +235,7 @@ while (-not $ubuntuReady -and $initAttempt -lt $maxInitRetries) {
         Write-Host "    2) Enter and confirm a password when prompted" -ForegroundColor Cyan
         Write-Host "    3) Type  exit  and press Enter to close the Ubuntu window" -ForegroundColor Cyan
         Write-Host ""
-        if ($initAttempt -lt $maxInitRetries) {
+        if ($initAttempt -le $maxInitRetries) {
             Read-Host "  Press Enter here once you have completed setup and typed 'exit' in Ubuntu"
             Write-Host ""
         }
@@ -254,7 +254,7 @@ Write-Host ""
 # ── Step 5b — Run the bootstrap (with one automatic retry on failure) ─────────
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-& wsl -d Ubuntu -- bash -c "curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+& wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
 $wslExit = $LASTEXITCODE
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -271,7 +271,7 @@ if ($wslExit -ne 0) {
     Write-Host ""
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin (retry) ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-    & wsl -d Ubuntu -- bash -c "curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    & wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
     $wslExit = $LASTEXITCODE
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray

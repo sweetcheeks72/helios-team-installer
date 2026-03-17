@@ -122,7 +122,7 @@ echo  [>>] Testing Ubuntu initialization (attempt %_INIT_ATTEMPTS% of 3)...
 
 set _WSL_TEST=
 for /f "delims=" %%O in ('wsl -d Ubuntu -- echo ready 2^>^&1') do set _WSL_TEST=%%O
-echo %_WSL_TEST% | find "ready" >nul 2>&1
+echo "%_WSL_TEST%" | find "ready" >nul 2>&1
 if %errorlevel% equ 0 goto wsl_initialized
 
 echo.
@@ -133,7 +133,7 @@ echo        1) Enter a username when prompted
 echo        2) Enter and confirm a password when prompted
 echo        3) Type  exit  and press Enter to close the Ubuntu window
 echo.
-if %_INIT_ATTEMPTS% lss 3 (
+if %_INIT_ATTEMPTS% leq 3 (
     pause
     goto wsl_init_check
 )
@@ -156,7 +156,7 @@ echo  This will install: Pi CLI, Helios agents, skills, extensions,
 echo  Memgraph, Ollama, MCP servers, and configure your API keys.
 echo.
 
-wsl -d Ubuntu -- bash -c "curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 if %errorlevel% neq 0 (
     echo.
     echo  [!] Bootstrap exited with an error. Retrying once...
@@ -166,7 +166,7 @@ if %errorlevel% neq 0 (
     echo        - Check disk space in Ubuntu
     echo.
     pause
-    wsl -d Ubuntu -- bash -c "curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
     if %errorlevel% neq 0 (
         echo.
         echo  [!] Bootstrap failed after retry.

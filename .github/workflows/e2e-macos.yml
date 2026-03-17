@@ -1,0 +1,75 @@
+name: E2E macOS Install Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  e2e-macos-install:
+    name: End-to-end install (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    env:
+      # Use a dummy API key so the installer doesn't block on prompts
+      # The installer reads from /dev/tty for interactive input, but
+      # in CI there's no tty. We need --update mode or non-interactive.
+      NONINTERACTIVE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify clean state
+        run: |
+          echo "=== Verifying clean macOS runner ==="
+          echo "No ~/.pi/agent should exist:"
+          ls ~/.pi/agent 2>/dev/null && echo "UNEXPECTED: ~/.pi/agent exists" || echo "✓ Clean - no existing install"
+          echo "Node: $(node -v 2>/dev/null || echo 'not installed')"
+          echo "npm: $(npm -v 2>/dev/null || echo 'not installed')"
+          echo "brew: $(brew --version 2>/dev/null | head -1 || echo 'not installed')"
+
+      - name: Build release tarball
+        run: |
+          # Build the tarball that the installer will download
+          # In CI, we serve it locally instead of from GitHub releases
+          bash build-release.sh 99.0.0-ci
+          ls -lh dist/
+
+      - name: Run installer (non-interactive mode)
+        run: |
+          # Run install.sh in update mode which skips interactive prompts
+          # First create minimal settings.json so update mode activates
+          mkdir -p ~/.pi/agent
+          cp provider-configs/anthropic.json ~/.pi/agent/settings.json
+          echo "99.0.0-ci" > ~/.pi/agent/VERSION
+
+          # Extract tarball to simulate what the installer downloads
+          tar -xzf dist/helios-agent-v99.0.0-ci.tar.gz -C ~/.pi/agent --strip-components=1
+
+          # Now run the installer in update mode (skips provider selection + API keys)
+          bash install.sh --update 2>&1 | tee /tmp/install-output.log
+
+          echo ""
+          echo "=== Install exit code: $? ==="
+
+      - name: Run feature parity verification
+        run: |
+          bash tests/e2e_feature_parity.sh 2>&1 | tee /tmp/feature-parity.log
+
+      - name: Run existing verify.sh
+        run: |
+          bash verify.sh 2>&1 | tee /tmp/verify-output.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-logs
+          path: |
+            /tmp/install-output.log
+            /tmp/feature-parity.log
+            /tmp/verify-output.log
+            ~/helios-team-installer/install.log

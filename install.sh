@@ -754,17 +754,34 @@ install_helios_cli() {
 
 # ─── Pi Update (Install Packages) ─────────────────────────────────────────────
 install_packages() {
-  step "Installing Pi packages (pi update)"
-  info "This installs all 20 git packages — may take 2-3 minutes"
+  step "Installing Pi packages"
+
+  # Check if packages were bundled in the tarball
+  local bundled_count=0
+  if [[ -d "$PI_AGENT_DIR/git/github.com/sweetcheeks72" ]]; then
+    bundled_count=$(find "$PI_AGENT_DIR/git/github.com/sweetcheeks72" -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    ((bundled_count--)) || true  # subtract the parent dir itself
+  fi
+
+  if [[ "$bundled_count" -ge 15 ]]; then
+    success "Packages pre-bundled in tarball ($bundled_count packages)"
+    info "Running pi update to verify and sync..."
+  else
+    info "Downloading packages — this may take 2-3 minutes"
+  fi
 
   if [[ ! -f "$PI_AGENT_DIR/settings.json" ]]; then
-    warn "settings.json not found — provider selection may have failed. Using Anthropic default."
+    warn "settings.json not found — using Anthropic default"
     cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
   fi
 
-  run_with_spinner "Running pi update (installing packages)" \
+  run_with_spinner "Running pi update (installing/verifying packages)" \
     pi update || {
-    warn "pi update had issues — packages may need manual installation"
+    if [[ "$bundled_count" -ge 15 ]]; then
+      warn "pi update had issues, but bundled packages are available"
+    else
+      warn "pi update had issues — packages may need manual installation"
+    fi
     return 0
   }
   success "Pi packages installed"
@@ -2202,15 +2219,15 @@ main() {
   echo -e "  ${DIM}Estimated time: 3-5 minutes.${RESET}"
   echo ""
   detect_update_mode "$@"
-  check_prerequisites
-  install_pi
-  setup_helios_agent || {
-    error "Helios agent setup failed — cannot continue"
-    exit 1
-  }
-  install_helios_cli
 
   if [[ "$UPDATE_MODE" == false ]]; then
+    check_prerequisites
+    install_pi
+    setup_helios_agent || {
+      error "Helios agent setup failed — cannot continue"
+      exit 1
+    }
+    install_helios_cli
     select_provider     # Interactive: choose AI provider
   fi
 
@@ -2218,19 +2235,19 @@ main() {
   deduplicate_extensions
   install_skill_deps    # neo4j-driver, tree-sitter for HEMA
   install_governance_deps  # Governance extension node_modules
-  install_git_hooks     # Pre-push hook for branch protection
-  setup_dep_allowlist   # npm dependency allowlist
-  setup_memgraph        # Docker + Memgraph + schema + 12GB cap
-  setup_ollama          # Ollama + embedding models (skips already-pulled)
-  setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
-  install_optional_deps # ffmpeg, yt-dlp, vector dimension fix
-  setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
-  schedule_bootstrap    # Queue + launch codebase indexing in background
 
   if [[ "$UPDATE_MODE" == false ]]; then
-    setup_api_keys      # Interactive: prompt for keys
-    wire_env_to_shell   # Add .env sourcing to shell profile
-    setup_familiar      # Interactive: optional Familiar install
+    install_git_hooks     # Pre-push hook for branch protection
+    setup_dep_allowlist   # npm dependency allowlist
+    setup_memgraph        # Docker + Memgraph + schema + 12GB cap
+    setup_ollama          # Ollama + embedding models (skips already-pulled)
+    setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
+    install_optional_deps # ffmpeg, yt-dlp, vector dimension fix
+    setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
+    schedule_bootstrap    # Queue + launch codebase indexing in background
+    setup_api_keys        # Interactive: prompt for keys
+    wire_env_to_shell     # Add .env sourcing to shell profile
+    setup_familiar        # Interactive: optional Familiar install
   fi
 
   dedup_skills_extensions

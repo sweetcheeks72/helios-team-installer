@@ -234,6 +234,67 @@ find "${STAGE_DIR}/extensions" -name "*.bak" -delete 2>/dev/null || true
 echo "✅ Cleanup complete"
 
 # ---------------------------------------------------------------------------
+# Bundle git packages (so fresh installs get everything in one download)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "📦 Bundling git packages ..."
+
+BUNDLE_GIT_DIR="${STAGE_DIR}/git/github.com/sweetcheeks72"
+mkdir -p "${BUNDLE_GIT_DIR}"
+
+PACKAGES=(
+  pi-subagents
+  pi-messenger
+  pi-coordination
+  pi-model-switch
+  pi-powerline-footer
+  pi-prompt-template-model
+  pi-review-loop
+  pi-rewind-hook
+  pi-web-access
+  pi-interactive-shell
+  pi-design-deck
+  visual-explainer
+  surf-cli
+  pi-foreground-chains
+  skills-hook
+  pi-interview-tool
+  pi-annotate
+  pi-skill-palette
+  pi-boomerang
+)
+
+bundled=0
+for pkg in "${PACKAGES[@]}"; do
+  if [[ -d "${HOME}/.pi/agent/git/github.com/sweetcheeks72/${pkg}" ]]; then
+    # Copy from local cache (faster, already verified)
+    rsync -aL \
+      --exclude='.git/' \
+      --exclude='node_modules/' \
+      --exclude='.venv/' \
+      --exclude='__pycache__/' \
+      "${HOME}/.pi/agent/git/github.com/sweetcheeks72/${pkg}/" \
+      "${BUNDLE_GIT_DIR}/${pkg}/"
+    ((bundled++)) || true
+  elif [[ -d "${HOME}/.pi/agent/git/github.com/nicobailon/${pkg}" ]]; then
+    # Fallback to nicobailon copy if sweetcheeks72 not present
+    rsync -aL \
+      --exclude='.git/' \
+      --exclude='node_modules/' \
+      --exclude='.venv/' \
+      --exclude='__pycache__/' \
+      "${HOME}/.pi/agent/git/github.com/nicobailon/${pkg}/" \
+      "${BUNDLE_GIT_DIR}/${pkg}/"
+    ((bundled++)) || true
+  else
+    echo "  ⚠ Package not found locally: ${pkg}"
+  fi
+done
+
+echo "✅ Bundled ${bundled}/${#PACKAGES[@]} packages"
+
+# ---------------------------------------------------------------------------
 # Write VERSION file
 # ---------------------------------------------------------------------------
 

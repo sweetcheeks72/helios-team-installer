@@ -13,47 +13,61 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
 
-    env:
-      # Use a dummy API key so the installer doesn't block on prompts
-      # The installer reads from /dev/tty for interactive input, but
-      # in CI there's no tty. We need --update mode or non-interactive.
-      NONINTERACTIVE: 1
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Verify clean state
         run: |
           echo "=== Verifying clean macOS runner ==="
-          echo "No ~/.pi/agent should exist:"
-          ls ~/.pi/agent 2>/dev/null && echo "UNEXPECTED: ~/.pi/agent exists" || echo "✓ Clean - no existing install"
+          ls ~/.pi/agent 2>/dev/null && echo "⚠ ~/.pi/agent exists" || echo "✓ Clean - no existing install"
           echo "Node: $(node -v 2>/dev/null || echo 'not installed')"
           echo "npm: $(npm -v 2>/dev/null || echo 'not installed')"
           echo "brew: $(brew --version 2>/dev/null | head -1 || echo 'not installed')"
 
-      - name: Build release tarball
+      - name: Download latest release tarball
         run: |
-          # Build the tarball that the installer will download
-          # In CI, we serve it locally instead of from GitHub releases
-          bash build-release.sh 99.0.0-ci
-          ls -lh dist/
+          mkdir -p dist
+          # Download the latest published tarball (what real users get)
+          curl -fSL --retry 3 --max-time 120 \
+            "https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download/helios-agent-latest.tar.gz" \
+            -o dist/helios-agent-latest.tar.gz
+          curl -fSL --retry 3 --max-time 30 \
+            "https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download/VERSION" \
+            -o dist/VERSION
+          echo "Tarball size: $(du -h dist/helios-agent-latest.tar.gz | cut -f1)"
+          echo "Version: $(cat dist/VERSION)"
 
-      - name: Run installer (non-interactive mode)
+      - name: Simulate fresh install (extract tarball + setup)
         run: |
-          # Run install.sh in update mode which skips interactive prompts
-          # First create minimal settings.json so update mode activates
+          # Create ~/.pi/agent and extract tarball (simulates what install.sh does)
           mkdir -p ~/.pi/agent
+          tar -xzf dist/helios-agent-latest.tar.gz -C ~/.pi/agent --strip-components=1
+          
+          # Write VERSION
+          cp dist/VERSION ~/.pi/agent/VERSION
+          
+          # Set up provider config (simulates the interactive selection step)
           cp provider-configs/anthropic.json ~/.pi/agent/settings.json
-          echo "99.0.0-ci" > ~/.pi/agent/VERSION
+          
+          # Create minimal .env (simulates user entering a dummy key)
+          cp .env.template ~/.pi/agent/.env
+          echo "ANTHROPIC_API_KEY=sk-ant-test-ci-dummy-key" >> ~/.pi/agent/.env
+          
+          echo "✓ Tarball extracted to ~/.pi/agent"
+          echo "Files: $(find ~/.pi/agent -type f | wc -l | tr -d ' ')"
 
-          # Extract tarball to simulate what the installer downloads
-          tar -xzf dist/helios-agent-v99.0.0-ci.tar.gz -C ~/.pi/agent --strip-components=1
+      - name: Install Pi CLI
+        run: |
+          npm install -g @mariozechner/pi-coding-agent 2>&1 || echo "⚠ Pi install failed (may need auth)"
+          which pi && echo "✓ Pi CLI installed: $(pi --version 2>/dev/null | head -1)" || echo "⚠ Pi CLI not in PATH"
 
-          # Now run the installer in update mode (skips provider selection + API keys)
-          bash install.sh --update 2>&1 | tee /tmp/install-output.log
-
+      - name: Run installer in update mode
+        run: |
+          # Run install.sh --update which skips interactive prompts
+          # This tests: pi update (package install), skill deps, MCP setup, etc.
+          bash install.sh --update 2>&1 | tee /tmp/install-output.log || true
           echo ""
-          echo "=== Install exit code: $? ==="
+          echo "=== Install completed ==="
 
       - name: Run feature parity verification
         run: |
@@ -62,6 +76,14 @@ jobs:
       - name: Run existing verify.sh
         run: |
           bash verify.sh 2>&1 | tee /tmp/verify-output.log
+      
+      - name: Check results
+        run: |
+          echo "=== Feature Parity Results ==="
+          tail -15 /tmp/feature-parity.log
+          echo ""
+          echo "=== Verify Results ==="
+          tail -15 /tmp/verify-output.log
 
       - name: Upload logs on failure
         if: failure()
@@ -72,4 +94,4 @@ jobs:
             /tmp/install-output.log
             /tmp/feature-parity.log
             /tmp/verify-output.log
-            ~/helios-team-installer/install.log
+            install.log

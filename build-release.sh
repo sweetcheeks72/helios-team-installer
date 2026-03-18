@@ -114,7 +114,7 @@ echo "              governance/events.jsonl, governance/inline-enforce.jsonl,"
 echo "              sessions/, .helios/, .backup.*, *.log, *.disabled,"
 echo "              run-history.jsonl, mcp-cache.json, user artifacts"
 
-rsync -aL \
+rsync -a \
   --exclude='.git/' \
   --exclude='node_modules/' \
   --exclude='.venv/' \
@@ -269,7 +269,7 @@ bundled=0
 for pkg in "${PACKAGES[@]}"; do
   if [[ -d "${HOME}/.pi/agent/git/github.com/sweetcheeks72/${pkg}" ]]; then
     # Copy from local cache (faster, already verified)
-    rsync -aL \
+    rsync -a \
       --exclude='.git/' \
       --exclude='node_modules/' \
       --exclude='.venv/' \
@@ -286,7 +286,7 @@ for pkg in "${PACKAGES[@]}"; do
     ((bundled++)) || true
   elif [[ -d "${HOME}/.pi/agent/git/github.com/nicobailon/${pkg}" ]]; then
     # Fallback to nicobailon copy if sweetcheeks72 not present
-    rsync -aL \
+    rsync -a \
       --exclude='.git/' \
       --exclude='node_modules/' \
       --exclude='.venv/' \

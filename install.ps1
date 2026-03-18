@@ -63,6 +63,10 @@ function Add-ToUserPath {
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Banner
+Write-Host "  Starting Helios installation..." -ForegroundColor White
+Write-Host "  This will set up WSL, Ubuntu, and the full Helios stack." -ForegroundColor DarkGray
+Write-Host "  Estimated time: 5-10 minutes (first install)." -ForegroundColor DarkGray
+Write-Host ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 2 — Windows version check
@@ -175,6 +179,18 @@ if (-not $ubuntuReady) {
         exit 1
     }
 
+    # Prevent RSA cryptographic deadlock (Windows security updates Oct 2025+)
+    try {
+        $regPath = "HKLM:\SOFTWARE\Microsoft\Cryptography\Calais"
+        if (Test-Path $regPath) {
+            $currentVal = Get-ItemProperty -Path $regPath -Name "DisableCapiOverrideForRSA" -ErrorAction SilentlyContinue
+            if ($null -eq $currentVal -or $currentVal.DisableCapiOverrideForRSA -ne 0) {
+                Set-ItemProperty -Path $regPath -Name "DisableCapiOverrideForRSA" -Value 0 -Type DWord -Force
+                Write-OK "Applied RSA compatibility fix"
+            }
+        }
+    } catch { }
+
     try {
         & wsl --install -d Ubuntu 2>&1 | ForEach-Object { Write-Host "    $_" }
     } catch {
@@ -183,6 +199,26 @@ if (-not $ubuntuReady) {
         exit 1
     }
 
+    # Verify features are actually enabled (wsl --install returns 0 even when pending reboot)
+    $wslFeature = Get-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Subsystem-Linux" -ErrorAction SilentlyContinue
+    $vmFeature = Get-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform" -ErrorAction SilentlyContinue
+    
+    $needsReboot = ($null -eq $wslFeature -or $wslFeature.State -ne "Enabled" -or 
+                    $null -eq $vmFeature -or $vmFeature.State -ne "Enabled")
+    
+    if (-not $needsReboot) {
+        # Features enabled without reboot — try to continue
+        Write-OK "WSL features enabled (no reboot needed)"
+        # Re-check if Ubuntu is now available
+        Start-Sleep -Seconds 3
+        $testUbuntu = & wsl --list --verbose 2>&1 | Out-String
+        if ($testUbuntu -match 'Ubuntu') {
+            Write-OK "Ubuntu installed and ready"
+            $ubuntuReady = $true
+        }
+    }
+    
+    if (-not $ubuntuReady) {
     Write-Host ""
     Write-Warn "╔══════════════════════════════════════════════════════════╗"
     Write-Warn "║  WSL + Ubuntu installed — RESTART REQUIRED               ║"
@@ -198,6 +234,7 @@ if (-not $ubuntuReady) {
     Write-Warn "╚══════════════════════════════════════════════════════════╝"
     Write-Host ""
     exit 0
+    }
 }
 
 Write-OK "Ubuntu (WSL 2) is ready"
@@ -254,7 +291,7 @@ Write-Host ""
 # ── Step 5b — Run the bootstrap (with one automatic retry on failure) ─────────
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-& wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+& wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
 $wslExit = $LASTEXITCODE
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -271,7 +308,7 @@ if ($wslExit -ne 0) {
     Write-Host ""
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin (retry) ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-    & wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    & wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
     $wslExit = $LASTEXITCODE
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -316,7 +353,8 @@ Write-OK "Written: helios.cmd"
 # ── helios.ps1 ───────────────────────────────────────────────────────────────
 $heliosPs1Path = Join-Path $shimDir 'helios.ps1'
 $heliosPs1Content = @'
-wsl -d Ubuntu -- helios @args
+$wslArgs = @('-d', 'Ubuntu', '--', 'helios') + $args
+& wsl @wslArgs
 '@
 Set-Content -Path $heliosPs1Path -Value $heliosPs1Content -Encoding UTF8 -Force
 Write-OK "Written: helios.ps1"
@@ -333,10 +371,53 @@ Write-OK "Written: pi.cmd"
 # ── pi.ps1 ────────────────────────────────────────────────────────────────────
 $piPs1Path = Join-Path $shimDir 'pi.ps1'
 $piPs1Content = @'
-wsl -d Ubuntu -- pi @args
+$wslArgs = @('-d', 'Ubuntu', '--', 'pi') + $args
+& wsl @wslArgs
 '@
 Set-Content -Path $piPs1Path -Value $piPs1Content -Encoding UTF8 -Force
 Write-OK "Written: pi.ps1"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 6b — Sync API key environment variables to WSL
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step "Setting up environment variable sharing with WSL..."
+
+$keysToShare = @(
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_DEFAULT_REGION",
+    "GITHUB_TOKEN",
+    "GROQ_API_KEY"
+)
+
+$currentWslEnv = [System.Environment]::GetEnvironmentVariable('WSLENV', 'User')
+$wslEnvParts = @()
+if ($currentWslEnv) {
+    $wslEnvParts = @($currentWslEnv -split ':' | Where-Object { $_ })
+}
+
+$added = 0
+foreach ($key in $keysToShare) {
+    $entry = "$key/u"
+    if ($wslEnvParts -notcontains $entry) {
+        $wslEnvParts += $entry
+        $added++
+    }
+}
+
+if ($added -gt 0) {
+    $newWslEnv = ($wslEnvParts | Where-Object { $_ }) -join ':'
+    [System.Environment]::SetEnvironmentVariable('WSLENV', $newWslEnv, 'User')
+    $env:WSLENV = $newWslEnv
+    Write-OK "WSLENV configured — API keys will automatically sync to WSL"
+} else {
+    Write-OK "WSLENV already configured for API key sharing"
+}
+
+Write-Host ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 7 — Add shim directory to user PATH

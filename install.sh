@@ -41,7 +41,7 @@ if [[ ! -t 0 ]]; then
     exec < /dev/tty || true
   else
     echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
-    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh)" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh -o /tmp/helios-bootstrap.sh && bash /tmp/helios-bootstrap.sh" >&2
     exit 1
   fi
 fi
@@ -414,7 +414,7 @@ install_pi() {
   if [[ -d "$HOME/.npm" ]]; then
     if ! npm cache verify >> "$LOG_FILE" 2>&1; then
       warn "npm cache issue detected — repairing..."
-      sudo chown -R "$(whoami)" "$HOME/.npm" 2>/dev/null || true
+      sudo chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
       npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     fi
   fi
@@ -426,7 +426,7 @@ install_pi() {
   else
     # Retry with full cache nuke
     warn "First attempt failed — clearing npm cache and retrying..."
-    sudo chown -R "$(whoami)" "$HOME/.npm" 2>/dev/null || true
+    sudo chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Pi CLI install" \
@@ -492,6 +492,7 @@ setup_helios_agent() {
     info "Backed up current agent to $backup_dir"
 
     # Stash user files before extraction
+    # PRESERVE_FILES — MUST MATCH auto-update.ts PRESERVE_FILES list
     local tmp_stash
     tmp_stash="$(mktemp -d)"
     for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
@@ -648,6 +649,14 @@ setup_helios_agent() {
   # ── Fresh install ─────────────────────────────────────────────────────────
   info "Fresh install — downloading helios-agent tarball…"
 
+  # Check disk space before downloading
+  local free_mb
+  free_mb=$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+  if [[ -n "$free_mb" ]] && [[ "$free_mb" -lt 500 ]]; then
+    error "Insufficient disk space (${free_mb}MB free, need at least 500MB)"
+    return 1
+  fi
+
   local tmp_tarball tmp_checksum
   tmp_tarball="$(mktemp)"
   tmp_checksum="$(mktemp)"
@@ -692,6 +701,12 @@ setup_helios_agent() {
 
   rm -f "$tmp_tarball" "$tmp_checksum"
   success "Helios agent installed to $PI_AGENT_DIR"
+
+  # Ensure VERSION file exists (tarball may be missing it)
+  if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
+    echo "tarball-$(date +%Y%m%d)" > "$PI_AGENT_DIR/VERSION"
+    warn "VERSION file missing from tarball — created placeholder"
+  fi
 }
 
 # ─── Helios CLI Command ──────────────────────────────────────────────────────

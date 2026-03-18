@@ -133,7 +133,7 @@ echo        1) Enter a username when prompted
 echo        2) Enter and confirm a password when prompted
 echo        3) Type  exit  and press Enter to close the Ubuntu window
 echo.
-if %_INIT_ATTEMPTS% leq 3 (
+if %_INIT_ATTEMPTS% lss 3 (
     pause
     goto wsl_init_check
 )

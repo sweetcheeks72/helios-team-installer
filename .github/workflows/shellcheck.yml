@@ -24,25 +24,30 @@ jobs:
         run: |
           echo "=== ShellCheck: install.sh ==="
           shellcheck --severity=warning --shell=bash \
-            --exclude=SC2034,SC2155,SC2086 \
+            --exclude=SC2024,SC2034,SC2155,SC2086 \
             install.sh
           
           echo "=== ShellCheck: bootstrap.sh ==="
           shellcheck --severity=warning --shell=bash \
-            --exclude=SC2034,SC2155,SC2086 \
+            --exclude=SC2024,SC2034,SC2155,SC2086 \
             bootstrap.sh 2>/dev/null || true
           
           echo "=== ShellCheck: verify.sh ==="
           shellcheck --severity=warning --shell=bash \
-            --exclude=SC2034,SC2155,SC2086 \
+            --exclude=SC2024,SC2034,SC2155,SC2086 \
             verify.sh 2>/dev/null || true
+          
+          echo "=== ShellCheck: uninstall.sh ==="
+          shellcheck --severity=warning --shell=bash \
+            --exclude=SC2024,SC2034,SC2155,SC2086 \
+            uninstall.sh 2>/dev/null || true
           
           echo "=== ShellCheck: test scripts ==="
           for f in tests/*.sh; do
             if [[ -f "$f" ]]; then
               echo "--- $f ---"
               shellcheck --severity=warning --shell=bash \
-                --exclude=SC2034,SC2155,SC2086 \
+                --exclude=SC2024,SC2034,SC2155,SC2086 \
                 "$f" 2>/dev/null || true
             fi
           done

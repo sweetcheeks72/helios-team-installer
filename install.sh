@@ -407,10 +407,10 @@ check_prerequisites() {
 install_pi() {
   step "Helios CLI"
 
-  if command -v helios &>/dev/null; then
+  if command -v pi &>/dev/null; then
     local pi_ver
-    pi_ver=$(helios --version 2>/dev/null | head -1 || echo "unknown")
-    success "Helios already installed: $pi_ver"
+    pi_ver=$(pi --version 2>/dev/null | head -1 || echo "unknown")
+    success "Pi CLI already installed: $pi_ver"
     PI_INSTALLED=true
     return 0
   fi
@@ -426,10 +426,10 @@ install_pi() {
     fi
   fi
   
-  if run_with_spinner "Installing Helios CLI (@helios-agent/cli)" \
-      npm install -g @helios-agent/cli; then
+  if run_with_spinner "Installing Helios CLI" \
+      npm install -g @mariozechner/pi-coding-agent; then
     PI_INSTALLED=true
-    success "Helios installed: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
+    success "Helios installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
   else
     # Retry with full cache nuke
     warn "First attempt failed — clearing npm cache and retrying..."
@@ -437,16 +437,16 @@ install_pi() {
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Helios CLI install" \
-        npm install -g @helios-agent/cli; then
+        npm install -g @mariozechner/pi-coding-agent; then
       PI_INSTALLED=true
-      success "Helios installed on retry: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
+      success "Helios installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
     else
       error "Failed to install Helios CLI."
       echo ""
       echo -e "  ${BOLD}Manual fix:${RESET}"
       echo -e "    ${DIM}sudo chown -R \$(whoami) ~/.npm${RESET}"
       echo -e "    ${DIM}npm cache clean --force${RESET}"
-      echo -e "    ${DIM}npm install -g @helios-agent/cli${RESET}"
+      echo -e "    ${DIM}npm install -g @mariozechner/pi-coding-agent${RESET}"
       echo -e "    Then re-run: ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
       exit 1
     fi
@@ -808,7 +808,7 @@ install_packages() {
   fi
   # Final fallback: npx
   if [[ ! -x "$cli_bin" ]]; then
-    cli_bin="npx @helios-agent/cli"
+    cli_bin="npx @mariozechner/pi-coding-agent"
   fi
   
   run_with_spinner "Running package sync ($cli_bin update)" \

@@ -45,11 +45,10 @@ jobs:
           echo "ANTHROPIC_API_KEY=sk-ant-test-ci-dummy-key" >> ~/.pi/agent/.env
           echo "✓ Tarball extracted: $(find ~/.pi/agent -type f | wc -l | tr -d ' ') files"
 
-      - name: Install Helios CLI (our fork, not upstream)
+      - name: Install Pi CLI (upstream package)
         run: |
-          # CRITICAL: Install OUR fork, not upstream @mariozechner/pi-coding-agent
-          npm install -g @helios-agent/cli
-          which helios && echo "✓ helios CLI installed" || { echo "✗ helios not found"; exit 1; }
+          npm install -g @mariozechner/pi-coding-agent
+          which pi && echo "✓ Pi CLI installed: $(pi --version 2>/dev/null | head -1)" || { echo "✗ pi not found"; exit 1; }
 
       - name: Verify wrapper integrity
         run: |
@@ -60,19 +59,19 @@ jobs:
           test -x "$WRAPPER" || { echo "✗ Wrapper not executable"; exit 1; }
           echo "✓ Wrapper executable"
           
-          # Must NOT reference upstream
-          if grep -q "mariozechner" "$WRAPPER"; then
-            echo "✗ Wrapper still references mariozechner (upstream)"
+          # Must reference the correct upstream package
+          if ! grep -q "mariozechner/pi-coding-agent" "$WRAPPER"; then
+            echo "✗ Wrapper missing @mariozechner/pi-coding-agent reference"
             exit 1
           fi
-          echo "✓ No upstream references"
+          echo "✓ References @mariozechner/pi-coding-agent"
           
-          # Must NOT use bare 'command -v pi' (finds upstream binary)
-          if grep -q "command -v pi" "$WRAPPER"; then
-            echo "✗ Wrapper uses 'command -v pi' (can find upstream)"
+          # Must use 'command -v pi' to find the upstream binary
+          if ! grep -q "command -v pi" "$WRAPPER"; then
+            echo "✗ Wrapper missing 'command -v pi' in resolve_cli"
             exit 1
           fi
-          echo "✓ No 'command -v pi'"
+          echo "✓ Has 'command -v pi'"
           
           # Must have resolve_cli function
           if ! grep -q "resolve_cli" "$WRAPPER"; then

@@ -28,6 +28,9 @@ detect_windows() {
       echo ""
       echo "    irm https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/install.ps1 | iex"
       echo ""
+      echo "  ⚠  Note: This downloads and executes a remote script."
+      echo "     Review the source first: https://github.com/sweetcheeks72/helios-team-installer"
+      echo ""
       echo "  Option 2 — Command Prompt (no PowerShell needed):"
       echo "  Open CMD as Administrator and run:"
       echo ""
@@ -66,13 +69,17 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" != "1" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
+  RED='\033[0;31m'
+  GREEN='\033[0;32m'
+  YELLOW='\033[1;33m'
+  CYAN='\033[0;36m'
+  BOLD='\033[1m'
+  DIM='\033[2m'
+  RESET='\033[0m'
+else
+  RED='' GREEN='' YELLOW='' CYAN='' BOLD='' DIM='' RESET=''
+fi
 
 INSTALLER_DIR="$HOME/helios-team-installer"
 INSTALLER_REPO="https://github.com/sweetcheeks72/helios-team-installer.git"
@@ -101,12 +108,16 @@ echo ""
 echo -e "  ${BOLD}Installing prerequisites...${RESET}"
 
 PLATFORM="$(uname -s)"
-ARCH="$(uname -m)"
 
 # Homebrew (macOS only)
 if [[ "$PLATFORM" == "Darwin" ]] && ! command -v brew &>/dev/null; then
   echo -e "  ${CYAN}⬇${RESET}  Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/null
+  HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/aec7285/install.sh"
+  BREW_INSTALLER="/tmp/homebrew-install.sh"
+  curl -fsSL "$HOMEBREW_INSTALL_URL" -o "$BREW_INSTALLER"
+  echo -e "  ${DIM}Homebrew installer downloaded — pinned to known-good commit aec7285${RESET}"
+  /bin/bash "$BREW_INSTALLER" </dev/null
+  rm -f "$BREW_INSTALLER"
   # Add brew to PATH for this session
   if [[ -x /opt/homebrew/bin/brew ]]; then
     eval "$(/opt/homebrew/bin/brew shellenv)" 2>/dev/null || true
@@ -131,11 +142,22 @@ if [[ "$node_ok" == false ]]; then
   elif command -v apt-get &>/dev/null; then
     # Use NodeSource for Node 22 LTS on Ubuntu/Debian/WSL
     if command -v curl &>/dev/null; then
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - 2>/dev/null
-      sudo apt-get install -y nodejs 2>/dev/null
+      NODE_SETUP="/tmp/nodesource_setup_22.x.sh"
+      curl -fsSL https://deb.nodesource.com/setup_22.x -o "$NODE_SETUP"
+      echo "  ℹ  NodeSource setup script downloaded to $NODE_SETUP — inspect before continuing"
+      sudo bash "$NODE_SETUP"
+      rm -f "$NODE_SETUP"
+      sudo apt-get install -y nodejs
     else
-      sudo apt-get update -y 2>/dev/null && sudo apt-get install -y nodejs npm 2>/dev/null
+      sudo apt-get update -y && sudo apt-get install -y nodejs npm
     fi
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y nodejs
+  elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm nodejs npm
+  else
+    echo -e "  ${RED}✗${RESET} Unsupported package manager — install Node.js 18+ manually: https://nodejs.org"
+    exit 1
   fi
   command -v node &>/dev/null && echo -e "  ${GREEN}✓${RESET} Node.js $(node -v) installed" || { echo -e "  ${RED}✗${RESET} Node.js install failed — install manually: https://nodejs.org"; exit 1; }
 fi
@@ -148,7 +170,14 @@ else
   if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
     brew install git 2>&1
   elif command -v apt-get &>/dev/null; then
-    sudo apt-get install -y git 2>/dev/null
+    sudo apt-get install -y git
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y git
+  elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm git
+  else
+    echo -e "  ${RED}✗${RESET} Unsupported package manager — install git manually: https://git-scm.com"
+    exit 1
   fi
   command -v git &>/dev/null && echo -e "  ${GREEN}✓${RESET} git installed" || { echo -e "  ${RED}✗${RESET} git install failed"; exit 1; }
 fi
@@ -169,7 +198,13 @@ else
   if [[ "$PLATFORM" == "Darwin" ]]; then
     brew install python3 2>&1
   elif command -v apt-get &>/dev/null; then
-    sudo apt-get install -y python3 2>/dev/null
+    sudo apt-get install -y python3
+  elif command -v dnf &>/dev/null; then
+    sudo dnf install -y python3
+  elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm python
+  else
+    echo -e "  ${YELLOW}⚠${RESET} Unsupported package manager — install python3 manually: https://python.org"
   fi
   command -v python3 &>/dev/null && echo -e "  ${GREEN}✓${RESET} python3 installed" || echo -e "  ${YELLOW}⚠${RESET} python3 not found — some features may be limited"
 fi
@@ -197,4 +232,16 @@ echo ""
 # ─── Hand off to full installer ──────────────────────────────────────────────
 echo -e "  ${BOLD}Launching full installer...${RESET}"
 echo ""
+
+# Verify install.sh exists
+if [[ ! -f "$INSTALLER_DIR/install.sh" ]]; then
+  echo -e "  ${RED}✗${RESET} install.sh not found in cloned repo. Repository structure may have changed." >&2
+  echo -e "    Check: https://github.com/sweetcheeks72/helios-team-installer" >&2
+  exit 1
+fi
+
+# Show what we're about to execute
+INSTALLER_COMMIT="$(git -C "$INSTALLER_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+echo -e "  ${DIM}Running install.sh from commit ${INSTALLER_COMMIT}${RESET}"
+
 exec bash "$INSTALLER_DIR/install.sh" "$@"

@@ -59,12 +59,12 @@ jobs:
           test -x "$WRAPPER" || { echo "✗ Wrapper not executable"; exit 1; }
           echo "✓ Wrapper executable"
           
-          # Must reference the correct upstream package
-          if ! grep -q "mariozechner/pi-coding-agent" "$WRAPPER"; then
-            echo "✗ Wrapper missing @mariozechner/pi-coding-agent reference"
+          # Verify wrapper has proper CLI resolution
+          if ! grep -q "resolve_cli" "$WRAPPER"; then
+            echo "✗ Wrapper missing resolve_cli function"
             exit 1
           fi
-          echo "✓ References @mariozechner/pi-coding-agent"
+          echo "✓ Has resolve_cli function"
           
           # Must use 'command -v pi' to find the upstream binary
           if ! grep -q "command -v pi" "$WRAPPER"; then

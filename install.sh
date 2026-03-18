@@ -444,10 +444,8 @@ install_pi() {
       error "Failed to install Helios CLI."
       echo ""
       echo -e "  ${BOLD}Manual fix:${RESET}"
-      echo -e "    ${DIM}sudo chown -R \$(whoami) ~/.npm${RESET}"
-      echo -e "    ${DIM}npm cache clean --force${RESET}"
-      echo -e "    ${DIM}npm install -g @mariozechner/pi-coding-agent${RESET}"
-      echo -e "    Then re-run: ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
+      echo -e "    ${DIM}# Re-run the installer:${RESET}"
+      echo -e "    ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
       exit 1
     fi
   fi
@@ -811,7 +809,7 @@ install_packages() {
     cli_bin="npx @mariozechner/pi-coding-agent"
   fi
   
-  run_with_spinner "Running package sync ($cli_bin update)" \
+  run_with_spinner "Running package sync" \
     $cli_bin update || {
     if [[ "$bundled_count" -ge 15 ]]; then
       warn "helios update had issues, but bundled packages are available"

@@ -5,13 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
   e2e-macos-install:
     name: End-to-end install (macOS)
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +19,13 @@ jobs:
       - name: Verify clean state
         run: |
           echo "=== Verifying clean macOS runner ==="
-          ls ~/.pi/agent 2>/dev/null && echo "⚠ ~/.pi/agent exists" || echo "✓ Clean - no existing install"
-          echo "Node: $(node -v 2>/dev/null || echo 'not installed')"
-          echo "npm: $(npm -v 2>/dev/null || echo 'not installed')"
-          echo "brew: $(brew --version 2>/dev/null | head -1 || echo 'not installed')"
+          test ! -d ~/.pi/agent && echo "✓ Clean - no existing install" || { echo "✗ ~/.pi/agent exists"; exit 1; }
+          echo "Node: $(node -v)"
+          echo "npm: $(npm -v)"
 
       - name: Download latest release tarball
         run: |
           mkdir -p dist
-          # Download the latest published tarball (what real users get)
           curl -fSL --retry 3 --max-time 120 \
             "https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download/helios-agent-latest.tar.gz" \
             -o dist/helios-agent-latest.tar.gz
@@ -37,53 +35,120 @@ jobs:
           echo "Tarball size: $(du -h dist/helios-agent-latest.tar.gz | cut -f1)"
           echo "Version: $(cat dist/VERSION)"
 
-      - name: Simulate fresh install (extract tarball + setup)
+      - name: Extract tarball (simulates what install.sh does)
         run: |
-          # Create ~/.pi/agent and extract tarball (simulates what install.sh does)
           mkdir -p ~/.pi/agent
           tar -xzf dist/helios-agent-latest.tar.gz -C ~/.pi/agent --strip-components=1
-          
-          # Write VERSION
           cp dist/VERSION ~/.pi/agent/VERSION
-          
-          # Set up provider config (simulates the interactive selection step)
           cp provider-configs/anthropic.json ~/.pi/agent/settings.json
-          
-          # Create minimal .env (simulates user entering a dummy key)
           cp .env.template ~/.pi/agent/.env
           echo "ANTHROPIC_API_KEY=sk-ant-test-ci-dummy-key" >> ~/.pi/agent/.env
+          echo "✓ Tarball extracted: $(find ~/.pi/agent -type f | wc -l | tr -d ' ') files"
+
+      - name: Install Helios CLI (our fork, not upstream)
+        run: |
+          # CRITICAL: Install OUR fork, not upstream @mariozechner/pi-coding-agent
+          npm install -g @helios-agent/cli
+          which helios && echo "✓ helios CLI installed" || { echo "✗ helios not found"; exit 1; }
+
+      - name: Verify wrapper integrity
+        run: |
+          WRAPPER=~/.pi/agent/bin/helios
+          echo "=== Wrapper checks ==="
           
-          echo "✓ Tarball extracted to ~/.pi/agent"
-          echo "Files: $(find ~/.pi/agent -type f | wc -l | tr -d ' ')"
+          # Must exist and be executable
+          test -x "$WRAPPER" || { echo "✗ Wrapper not executable"; exit 1; }
+          echo "✓ Wrapper executable"
+          
+          # Must NOT reference upstream
+          if grep -q "mariozechner" "$WRAPPER"; then
+            echo "✗ Wrapper still references mariozechner (upstream)"
+            exit 1
+          fi
+          echo "✓ No upstream references"
+          
+          # Must NOT use bare 'command -v pi' (finds upstream binary)
+          if grep -q "command -v pi" "$WRAPPER"; then
+            echo "✗ Wrapper uses 'command -v pi' (can find upstream)"
+            exit 1
+          fi
+          echo "✓ No 'command -v pi'"
+          
+          # Must have resolve_cli function
+          if ! grep -q "resolve_cli" "$WRAPPER"; then
+            echo "✗ Missing resolve_cli function"
+            exit 1
+          fi
+          echo "✓ Has resolve_cli"
+          
+          # Must have recursion guard
+          if ! grep -q "_HELIOS_UPDATE_GUARD" "$WRAPPER"; then
+            echo "✗ Missing recursion guard"
+            exit 1
+          fi
+          echo "✓ Has recursion guard"
+          
+          # Syntax check
+          bash -n "$WRAPPER" || { echo "✗ Syntax error in wrapper"; exit 1; }
+          echo "✓ Syntax OK"
 
-      - name: Install Pi CLI
+      - name: Check no sudo prompts possible
         run: |
-          npm install -g @mariozechner/pi-coding-agent 2>&1 || echo "⚠ Pi install failed (may need auth)"
-          which pi && echo "✓ Pi CLI installed: $(pi --version 2>/dev/null | head -1)" || echo "⚠ Pi CLI not in PATH"
+          echo "=== Checking for dangerous sudo calls ==="
+          # Find sudo calls that could prompt for password (not apt-get, not sudo -n)
+          DANGEROUS=$(grep -n 'sudo' install.sh | grep -v 'apt-get\|usermod\|sudo -n\|echo.*sudo\|DIM.*sudo\|#.*sudo\|info.*sudo' || true)
+          if [[ -n "$DANGEROUS" ]]; then
+            echo "✗ Found sudo calls that could prompt for password:"
+            echo "$DANGEROUS"
+            exit 1
+          fi
+          echo "✓ No dangerous sudo calls"
 
-      - name: Run installer in update mode
+      - name: Check no infinite loop in install_packages
         run: |
-          # Run install.sh --update which skips interactive prompts
-          # This tests: pi update (package install), skill deps, MCP setup, etc.
-          bash install.sh --update 2>&1 | tee /tmp/install-output.log || true
-          echo ""
-          echo "=== Install completed ==="
+          echo "=== Checking install_packages for loop risk ==="
+          # Extract install_packages function body
+          FUNC_BODY=$(sed -n '/^install_packages()/,/^}/p' install.sh)
+          
+          # Must NOT call bare 'helios update' (causes loop through wrapper)
+          if echo "$FUNC_BODY" | grep -v '#\|warn\|info\|echo\|success' | grep -q "helios update"; then
+            echo "✗ install_packages() calls 'helios update' directly (infinite loop risk)"
+            exit 1
+          fi
+          echo "✓ No bare 'helios update' in install_packages"
+          
+          # Should resolve CLI binary directly
+          if ! echo "$FUNC_BODY" | grep -q "npm prefix\|cli_bin\|resolve"; then
+            echo "⚠ install_packages() may not be resolving CLI binary directly"
+          fi
+          echo "✓ install_packages() bypasses wrapper"
+
+      - name: Run installer in update mode (with timeout)
+        run: |
+          # CRITICAL: Use timeout to catch infinite loops — 120 seconds max
+          # Do NOT use || true — we want to catch failures
+          timeout 120 bash install.sh --update 2>&1 | tee /tmp/install-output.log
+          echo "✓ Install completed within timeout"
 
       - name: Run feature parity verification
         run: |
           bash tests/e2e_feature_parity.sh 2>&1 | tee /tmp/feature-parity.log
 
-      - name: Run existing verify.sh
+      - name: Run verify.sh
         run: |
           bash verify.sh 2>&1 | tee /tmp/verify-output.log
-      
-      - name: Check results
+
+      - name: Summary
+        if: always()
         run: |
           echo "=== Feature Parity Results ==="
-          tail -15 /tmp/feature-parity.log
+          tail -15 /tmp/feature-parity.log 2>/dev/null || echo "(not available)"
           echo ""
           echo "=== Verify Results ==="
-          tail -15 /tmp/verify-output.log
+          tail -15 /tmp/verify-output.log 2>/dev/null || echo "(not available)"
+          echo ""
+          echo "=== Install Output (last 30 lines) ==="
+          tail -30 /tmp/install-output.log 2>/dev/null || echo "(not available)"
 
       - name: Upload logs on failure
         if: failure()

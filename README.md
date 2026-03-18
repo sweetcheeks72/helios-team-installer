@@ -61,7 +61,7 @@ bash ~/helios-team-installer/install.sh --fresh   # re-run full setup (re-prompt
 
 | Component | Description |
 |-----------|-------------|
-| **Pi CLI** | The terminal AI coding harness (`@mariozechner/pi-coding-agent`) |
+| **Pi CLI** | The terminal AI coding harness (`@helios-agent/cli`) |
 | **Helios Agent** | Orchestrator identity, 50+ agents, 13 skills, extensions (~/.pi/agent/) |
 | **20 Git Packages** | Extensions for subagents, coordination, design deck, web access, etc. |
 | **5 Local Extensions** | Governance, codebase-index, subagent-mesh, MCP startup, inline-enforce |
@@ -85,7 +85,7 @@ bash ~/helios-team-installer/install.sh --fresh   # re-run full setup (re-prompt
                              │
 ┌────────────────────────────▼────────────────────────────────────┐
 │                      Pi CLI  (npm -g)                            │
-│            @mariozechner/pi-coding-agent                         │
+│            @helios-agent/cli                         │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                  ~/.pi/agent/                             │   │
@@ -227,7 +227,7 @@ If the installer fails, here are the manual steps:
 
 ```bash
 # 1. Install Pi
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @helios-agent/cli
 
 # 2. Clone Helios agent
 git clone https://github.com/sweetcheeks72/helios-agent.git ~/.pi/agent
@@ -267,8 +267,8 @@ npm config get prefix
 ### `Error: Cannot find module` when running pi
 ```bash
 # Reinstall Pi
-npm uninstall -g @mariozechner/pi-coding-agent
-npm install -g @mariozechner/pi-coding-agent
+npm uninstall -g @helios-agent/cli
+npm install -g @helios-agent/cli
 ```
 
 ### Packages not installed / agents missing

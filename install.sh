@@ -426,8 +426,8 @@ install_pi() {
     fi
   fi
   
-  if run_with_spinner "Installing Pi CLI (@mariozechner/pi-coding-agent)" \
-      npm install -g @mariozechner/pi-coding-agent; then
+  if run_with_spinner "Installing Pi CLI (@helios-agent/cli)" \
+      npm install -g @helios-agent/cli; then
     PI_INSTALLED=true
     success "Pi installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
   else
@@ -437,7 +437,7 @@ install_pi() {
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Pi CLI install" \
-        npm install -g @mariozechner/pi-coding-agent; then
+        npm install -g @helios-agent/cli; then
       PI_INSTALLED=true
       success "Pi installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
     else
@@ -446,7 +446,7 @@ install_pi() {
       echo -e "  ${BOLD}Manual fix:${RESET}"
       echo -e "    ${DIM}sudo chown -R \$(whoami) ~/.npm${RESET}"
       echo -e "    ${DIM}npm cache clean --force${RESET}"
-      echo -e "    ${DIM}npm install -g @mariozechner/pi-coding-agent${RESET}"
+      echo -e "    ${DIM}npm install -g @helios-agent/cli${RESET}"
       echo -e "    Then re-run: ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
       exit 1
     fi

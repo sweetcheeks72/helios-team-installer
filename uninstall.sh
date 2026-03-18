@@ -85,13 +85,13 @@ fi
 
 # ─── 3. Remove Pi CLI ─────────────────────────────────────────────────────────
 if command -v pi &>/dev/null; then
-  ask "Remove Pi CLI (npm uninstall -g @mariozechner/pi-coding-agent)? [y/N]:"
+  ask "Remove Pi CLI (npm uninstall -g @helios-agent/cli)? [y/N]:"
   read -r remove_pi_cli
   if [[ "$remove_pi_cli" =~ ^[Yy]$ ]]; then
-    if npm uninstall -g @mariozechner/pi-coding-agent 2>/dev/null; then
+    if npm uninstall -g @helios-agent/cli 2>/dev/null; then
       success "Pi CLI removed"
     else
-      warn "Could not remove Pi CLI automatically — run: npm uninstall -g @mariozechner/pi-coding-agent"
+      warn "Could not remove Pi CLI automatically — run: npm uninstall -g @helios-agent/cli"
     fi
   else
     info "Keeping Pi CLI"

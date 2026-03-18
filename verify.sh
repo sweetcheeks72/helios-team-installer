@@ -83,8 +83,8 @@ if command -v pi &>/dev/null; then
   pi_ver=$(pi --version 2>/dev/null | tail -1 || echo "unknown")
   check_pass "pi binary: $pi_ver ($(which pi))"
 else
-  check_fail "pi binary not found — run: npm install -g @mariozechner/pi-coding-agent"
-  auto_fix 'Install Pi CLI' 'npm install -g @mariozechner/pi-coding-agent'
+  check_fail "pi binary not found — run: npm install -g @helios-agent/cli"
+  auto_fix 'Install Pi CLI' 'npm install -g @helios-agent/cli'
 fi
 
 if command -v helios &>/dev/null; then

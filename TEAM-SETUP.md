@@ -120,7 +120,7 @@ Here's what happens at each stage (the installer tells you, but so you're not su
 
 **1. Prerequisites check** — It verifies Node, npm, git are installed. If anything is missing, it tells you exactly what to install and stops.
 
-**2. Pi CLI install** — If you don't have `pi` installed, it runs `npm install -g @mariozechner/pi-coding-agent`. If you already have it, it skips this.
+**2. Pi CLI install** — If you don't have `pi` installed, it runs `npm install -g @helios-agent/cli`. If you already have it, it skips this.
 
 **3. Helios agent clone** — Clones the `helios-agent` repo to `~/.pi/agent/`. This is where all the agent definitions, skills, and configuration live. If it already exists, it pulls the latest.
 

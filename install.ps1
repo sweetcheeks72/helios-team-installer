@@ -258,7 +258,7 @@ $maxInitRetries = 3
 $initAttempt    = 0
 $ubuntuReady    = $false
 
-while (-not $ubuntuReady -and $initAttempt -lt $maxInitRetries) {
+while (-not $ubuntuReady -and $initAttempt -le $maxInitRetries) {
     $initAttempt++
     Write-Host "  [»] Testing Ubuntu initialization (attempt $initAttempt of $maxInitRetries)..." -ForegroundColor DarkGray
     $testOutput = (& wsl -d Ubuntu -- echo ready 2>&1) -join " "

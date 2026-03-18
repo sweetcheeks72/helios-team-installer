@@ -61,7 +61,7 @@ if [[ ! -t 0 ]]; then
     exec < /dev/tty
   else
     echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
-    echo "  bash <(curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh)" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh -o /tmp/helios-bootstrap.sh && bash /tmp/helios-bootstrap.sh" >&2
     exit 1
   fi
 fi

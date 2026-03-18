@@ -8,6 +8,27 @@
 
 set -uo pipefail
 
+# ─── Flags ────────────────────────────────────────────────────────────────────
+FIX_MODE=false
+for arg in "$@"; do
+  case "$arg" in
+    --fix)  FIX_MODE=true ;;
+    --help|-h)
+      echo "Usage: bash verify.sh [--fix] [--help]"
+      echo ""
+      echo "  (no flags)  Run health checks and print a report card."
+      echo "  --fix       Auto-repair fixable issues (install missing tools,"
+      echo "              start services, create missing files)."
+      echo "  --help      Show this help message."
+      echo ""
+      echo "Examples:"
+      echo "  bash ~/helios-team-installer/verify.sh"
+      echo "  bash ~/helios-team-installer/verify.sh --fix"
+      exit 0
+      ;;
+  esac
+done
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -31,6 +52,23 @@ check_warn() { echo -e "  ${YELLOW}⚠${RESET} $*"; ((WARN++)) || true; }
 check_fail() { echo -e "  ${RED}✗${RESET} $*"; ((FAIL++)) || true; }
 section()    { echo -e "\n  ${BOLD}${CYAN}$*${RESET}"; }
 
+auto_fix() {
+  local description="$1"
+  local command="$2"
+  if [[ "$FIX_MODE" == true ]]; then
+    echo -e "    ${CYAN}→ Auto-fixing: $description${RESET}"
+    if eval "$command" 2>&1 | tail -3; then
+      echo -e "    ${GREEN}→ Fixed!${RESET}"
+      return 0
+    else
+      echo -e "    ${RED}→ Fix failed${RESET}"
+      return 1
+    fi
+  else
+    echo -e "    ${DIM}→ Fix: $command${RESET}"
+  fi
+}
+
 # ─── Banner ───────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}${CYAN}  ╔══════════════════════════════════════════╗${RESET}"
@@ -46,12 +84,14 @@ if command -v pi &>/dev/null; then
   check_pass "pi binary: $pi_ver ($(which pi))"
 else
   check_fail "pi binary not found — run: npm install -g @helios-agent/cli"
+  auto_fix 'Install Pi CLI' 'npm install -g @helios-agent/cli'
 fi
 
 if command -v helios &>/dev/null; then
   check_pass "helios CLI: $(which helios)"
 else
   check_warn "helios CLI not found — run install.sh to add it"
+  auto_fix 'Install helios CLI' 'bash ~/helios-team-installer/install.sh'
 fi
 
 if command -v node &>/dev/null; then
@@ -80,6 +120,7 @@ if [[ -d "$PI_AGENT_DIR" ]]; then
   fi
 else
   check_fail "~/.pi/agent/ not found — run install.sh"
+  auto_fix 'Re-run installer' 'bash ~/helios-team-installer/install.sh --update'
 fi
 
 # Expected subdirs
@@ -89,6 +130,7 @@ for dir in agents skills extensions; do
     check_pass "~/.pi/agent/$dir/ — $count files"
   else
     check_warn "~/.pi/agent/$dir/ not found"
+    auto_fix 'Run pi update' 'pi update'
   fi
 done
 
@@ -101,8 +143,10 @@ if [[ -d "$PI_AGENT_DIR/agents" ]]; then
     check_pass "Agents: $agent_count (✓ expect 40+)"
   elif [[ "$agent_count" -ge 20 ]]; then
     check_warn "Agents: $agent_count (expected 40+) — run: pi update"
+    auto_fix 'Run pi update' 'pi update'
   else
     check_fail "Agents: $agent_count (expected 40+) — packages may not be installed"
+    auto_fix 'Run pi update' 'pi update'
   fi
 
   # Check critical agents
@@ -111,10 +155,12 @@ if [[ -d "$PI_AGENT_DIR/agents" ]]; then
       check_pass "Agent exists: $agent"
     else
       check_warn "Agent missing: $agent"
+      auto_fix 'Run pi update' 'pi update'
     fi
   done
 else
   check_fail "~/.pi/agent/agents/ not found"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 # ─── 4. Skills ────────────────────────────────────────────────────────────────
@@ -139,8 +185,10 @@ if [[ "$skill_count" -ge 13 ]]; then
   check_pass "Total skills: $skill_count (✓ expect 13+)"
 elif [[ "$skill_count" -gt 0 ]]; then
   check_warn "Total skills: $skill_count (expected 13+)"
+  auto_fix 'Run pi update' 'pi update'
 else
   check_fail "No skills found"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 # ─── 5. Extensions ────────────────────────────────────────────────────────────
@@ -171,11 +219,13 @@ if [[ -d "$PI_AGENT_DIR/extensions" ]]; then
   done
   if [[ ${#missing_exts[@]} -gt 0 ]]; then
     check_warn "Missing extensions: ${missing_exts[*]} — run: cd ~/.pi/agent && git pull"
+    auto_fix 'Pull agent repo and update' 'cd ~/.pi/agent && git pull && pi update'
   else
     check_pass "All ${found_exts} required extensions present"
   fi
 else
   check_fail "~/.pi/agent/extensions/ not found — run: cd ~/.pi/agent && git pull"
+  auto_fix 'Pull agent repo' 'cd ~/.pi/agent && git pull'
 fi
 
 # ─── 5b. Git Packages ─────────────────────────────────────────────────────────
@@ -187,11 +237,14 @@ if [[ -d "$PI_AGENT_DIR/git" ]]; then
     check_pass "Git packages: $pkg_count installed (✓ expect 18+)"
   elif [[ "$pkg_count" -gt 0 ]]; then
     check_warn "Git packages: $pkg_count installed (expected 18+) — run: pi update"
+    auto_fix 'Run pi update' 'pi update'
   else
     check_fail "Git packages: none found — run: pi update"
+    auto_fix 'Run pi update' 'pi update'
   fi
 else
   check_fail "~/.pi/agent/git/ not found — pi update has not been run"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 # Check critical packages individually
@@ -204,6 +257,7 @@ for pkg in "${critical_pkgs[@]}"; do
 done
 if [[ ${#missing_critical[@]} -gt 0 ]]; then
   check_warn "Missing critical packages: ${missing_critical[*]} — run: cd ~/.pi/agent && git pull && pi update"
+  auto_fix 'Run pi update' 'cd ~/.pi/agent && git pull && pi update'
 else
   check_pass "All critical packages present (interview, visual-explainer, design-deck, subagents, web-access)"
 fi
@@ -242,6 +296,7 @@ if [[ -f "$env_file" ]]; then
   check_key "GITHUB_TOKEN" "GitHub token (recommended)"
 else
   check_fail ".env not found at $env_file — run install.sh or create manually"
+  auto_fix 'Create .env from template' 'cp ~/helios-team-installer/.env.template ~/.pi/agent/.env && chmod 600 ~/.pi/agent/.env'
 fi
 
 if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
@@ -254,6 +309,7 @@ if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
   check_pass "settings.json: provider=$provider, model=$model, packages=$pkg_count"
 else
   check_fail "settings.json not found in $PI_AGENT_DIR"
+  auto_fix 'Re-run installer' 'bash ~/helios-team-installer/install.sh --update'
 fi
 
 # ─── 7. MCP Servers ───────────────────────────────────────────────────────────
@@ -299,10 +355,12 @@ if [[ -n "$mg_running" ]]; then
       check_pass "Bolt connection verified (neo4j-driver → localhost:7687)"
     else
       check_warn "Bolt port open but driver connection failed"
+      auto_fix 'Install neo4j-driver' 'cd ~/.pi/agent/skills/skill-graph/scripts && npm install --legacy-peer-deps'
     fi
   elif nc -z 127.0.0.1 7687 2>/dev/null; then
     check_pass "Memgraph Bolt port 7687 reachable"
     check_warn "neo4j-driver not installed — run installer to add it"
+    auto_fix 'Install neo4j-driver' 'cd ~/.pi/agent/skills/skill-graph/scripts && npm install --legacy-peer-deps'
   fi
 
   # Memory cap
@@ -316,6 +374,7 @@ if [[ -n "$mg_running" ]]; then
 else
   if command -v docker &>/dev/null; then
     check_warn "Memgraph not running — start with: cd ~/.pi/agent/proxies/memgraph && docker compose up -d"
+    auto_fix 'Start Memgraph' 'docker start memgraph 2>/dev/null || (cd ~/.pi/agent/proxies/memgraph && docker compose up -d)'
   else
     check_warn "No container runtime (OrbStack/Docker) — Memgraph unavailable"
   fi
@@ -336,11 +395,13 @@ if [[ -f "$runtime_contract" ]]; then
       check_warn "Contract container NOT running: $contract_container"
       echo -e "    ${DIM}→ Self-heal: docker start ${contract_container}${RESET}"
       echo -e "    ${DIM}→ Or re-run: bash ~/helios-team-installer/install.sh${RESET}"
+      auto_fix 'Start Memgraph' 'docker start memgraph 2>/dev/null || (cd ~/.pi/agent/proxies/memgraph && docker compose up -d)'
     fi
   fi
 else
   check_warn "Runtime contract missing: $runtime_contract"
   echo -e "    ${DIM}→ Self-heal: bash ~/helios-team-installer/install.sh${RESET}"
+  auto_fix 'Re-run installer' 'bash ~/helios-team-installer/install.sh --update'
 fi
 
 # ─── 8c. Codebase Bootstrap State ─────────────────────────────────────────────
@@ -381,27 +442,33 @@ check_bootstrap_target() {
       queued)
         check_warn "$label — bootstrap queued (not yet started)"
         echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        auto_fix 'Run bootstrap' "node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
         ;;
       waiting_for_memgraph)
         check_warn "$label — bootstrap waiting for Memgraph${bs_error:+ ($bs_error)}"
         echo -e "    ${DIM}→ Start Memgraph then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        auto_fix 'Start Memgraph' 'docker start memgraph 2>/dev/null || (cd ~/.pi/agent/proxies/memgraph && docker compose up -d)'
         ;;
       waiting_for_ollama_model)
         check_warn "$label — bootstrap waiting for Ollama model${bs_error:+ ($bs_error)}"
         echo -e "    ${DIM}→ Run: ollama pull nomic-embed-text  then: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        auto_fix 'Pull embedding model' 'ollama pull nomic-embed-text'
         ;;
       failed)
         check_fail "$label — bootstrap FAILED${bs_error:+: $bs_error}"
         echo -e "    ${DIM}→ Retry: node $PI_AGENT_DIR/skills/skill-graph/scripts/index-codebase.js ${target_path} --incremental${RESET}"
+        auto_fix 'Retry bootstrap' "node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
         ;;
       *)
         check_warn "$label — unknown bootstrap state: $bs_state"
         echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+        auto_fix 'Run bootstrap' "node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
         ;;
     esac
   else
     check_warn "$label — no bootstrap record found"
     echo -e "    ${DIM}→ Self-heal: node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js${RESET}"
+    auto_fix 'Run bootstrap' "node $PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
   fi
 }
 
@@ -410,6 +477,7 @@ if [[ -d "$bootstrap_dir" ]]; then
 else
   check_warn "Bootstrap state dir missing: $bootstrap_dir"
   echo -e "    ${DIM}→ Self-heal: bash ~/helios-team-installer/install.sh${RESET}"
+  auto_fix 'Re-run installer' 'bash ~/helios-team-installer/install.sh --update'
 fi
 
 # Always check ~/.pi/agent bootstrap state
@@ -434,10 +502,12 @@ if command -v ollama &>/dev/null; then
         check_pass "$model model"
       else
         check_warn "$model not pulled — run: ollama pull $model"
+        auto_fix "Pull $model model" "ollama pull $model"
       fi
     done
   else
     check_warn "Ollama not running — start with: ollama serve"
+    auto_fix 'Start Ollama' 'nohup ollama serve >/dev/null 2>&1 & disown; sleep 3'
   fi
 else
   check_warn "Ollama not installed — embeddings unavailable (https://ollama.com)"
@@ -451,18 +521,21 @@ if [[ -d "$sg_dir/node_modules/neo4j-driver" ]]; then
   check_pass "neo4j-driver installed"
 else
   check_warn "neo4j-driver missing — run installer to add it"
+  auto_fix 'Install neo4j-driver' 'cd ~/.pi/agent/skills/skill-graph/scripts && npm install --legacy-peer-deps'
 fi
 
 if [[ -f "$sg_dir/ingest-episodes.js" ]]; then
   check_pass "ingest-episodes.js present"
 else
   check_warn "ingest-episodes.js missing — pull latest helios-agent"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 if [[ -f "$sg_dir/memory-recall.js" ]]; then
   check_pass "memory-recall.js present"
 else
   check_warn "memory-recall.js missing — pull latest helios-agent"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 # ─── 11. MCP Toolchain ───────────────────────────────────────────────────────
@@ -489,6 +562,7 @@ if [[ -f "$PI_AGENT_DIR/mcp.json" ]]; then
   done
 else
   check_warn "mcp.json not found"
+  auto_fix 'Re-run installer' 'bash ~/helios-team-installer/install.sh --update'
 fi
 
 # ─── 12. Git Hooks ───────────────────────────────────────────────────────────
@@ -498,6 +572,7 @@ if [[ -f "$PI_AGENT_DIR/.git/hooks/pre-push" ]]; then
   check_pass "pre-push hook installed"
 else
   check_warn "pre-push hook missing — agents can push to main unchecked"
+  auto_fix 'Install pre-push hook' 'cp ~/.pi/agent/hooks/pre-push ~/.pi/agent/.git/hooks/pre-push && chmod +x ~/.pi/agent/.git/hooks/pre-push'
 fi
 
 if [[ -f "$PI_AGENT_DIR/dep-allowlist.json" ]]; then
@@ -521,9 +596,11 @@ if [[ -d "$gov_dir" ]]; then
     check_pass "Governance node_modules installed"
   else
     check_warn "Governance node_modules missing — run: cd $gov_dir && npm install"
+    auto_fix 'Install governance deps' 'cd ~/.pi/agent/extensions/helios-governance && npm install'
   fi
 else
   check_warn "Governance extension not found"
+  auto_fix 'Run pi update' 'pi update'
 fi
 
 # ─── Report Card ──────────────────────────────────────────────────────────────
@@ -547,6 +624,12 @@ elif [[ "$FAIL" -eq 0 ]]; then
 else
   echo -e "  ${RED}${BOLD}  ✗ Setup incomplete — $FAIL check(s) failed${RESET}"
   echo -e "  ${DIM}  Run: bash ~/helios-team-installer/install.sh${RESET}"
+fi
+
+if [[ "$FIX_MODE" == true ]]; then
+  echo ""
+  echo -e "  ${CYAN}  ℹ If fixes were applied, re-run:${RESET}"
+  echo -e "  ${CYAN}    bash ~/helios-team-installer/verify.sh${RESET}"
 fi
 echo ""
 

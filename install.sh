@@ -10,6 +10,13 @@ INSTALLER_VERSION="2.1.0"
 set -euo pipefail
 INSTALL_WARNINGS=()
 
+# ─── Source error recovery library ────────────────────────────────────────────
+INSTALLER_DIR_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$INSTALLER_DIR_EARLY/lib/error-recovery.sh" ]]; then
+  # shellcheck source=lib/error-recovery.sh
+  source "$INSTALLER_DIR_EARLY/lib/error-recovery.sh"
+fi
+
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 for _arg in "$@"; do
   case "$_arg" in
@@ -2235,15 +2242,36 @@ main() {
   echo ""
   detect_update_mode "$@"
 
+  # ─── Check for --fresh flag (for checkpoint system) ──────────────────────
+  FRESH_INSTALL=false
+  for _arg in "$@"; do
+    [[ "$_arg" == "--fresh" ]] && FRESH_INSTALL=true
+  done
+  export FRESH_INSTALL
+
+  # ─── Resume offer ────────────────────────────────────────────────────────
+  if type load_checkpoint &>/dev/null; then
+    _last_checkpoint=$(load_checkpoint)
+    if [[ "$_last_checkpoint" -gt 0 ]] && [[ "$FRESH_INSTALL" == false ]] && [[ "$UPDATE_MODE" == false ]]; then
+      echo ""
+      echo -e "  ${CYAN}ℹ${RESET}  Previous install reached step $_last_checkpoint of $TOTAL_STEPS"
+      ask "Resume from where you left off? [Y/n]:"
+      read -t 30 -r _resume_choice || _resume_choice="y"
+      if [[ "$_resume_choice" =~ ^[Nn]$ ]]; then
+        clear_checkpoint
+      else
+        echo -e "  ${GREEN}✓${RESET} Resuming — skipping completed steps"
+      fi
+      echo ""
+    fi
+  fi
+
   if [[ "$UPDATE_MODE" == false ]]; then
-    check_prerequisites
-    install_pi
-    setup_helios_agent || {
-      error "Helios agent setup failed — cannot continue"
-      exit 1
-    }
-    install_helios_cli
-    select_provider     # Interactive: choose AI provider
+    run_step "Prerequisites"     check_prerequisites
+    run_step "Pi CLI"            install_pi
+    run_step "Helios Agent"      setup_helios_agent
+    run_step "Helios CLI"        install_helios_cli
+    run_step "Provider Selection" select_provider
   fi
 
   # Ensure Pi is available before running packages (may have been uninstalled)
@@ -2252,18 +2280,18 @@ main() {
     install_pi
   fi
 
-  install_packages
+  run_step "Pi Packages"       install_packages
   deduplicate_extensions
-  install_skill_deps    # neo4j-driver, tree-sitter for HEMA
-  install_governance_deps  # Governance extension node_modules
+  run_step "Skill Dependencies" install_skill_deps
+  run_step "Governance Deps"    install_governance_deps
 
   if [[ "$UPDATE_MODE" == false ]]; then
-    install_git_hooks     # Pre-push hook for branch protection
-    setup_dep_allowlist   # npm dependency allowlist
-    setup_memgraph        # Docker + Memgraph + schema + 12GB cap
-    setup_ollama          # Ollama + embedding models (skips already-pulled)
-    setup_mcp_servers     # uv/uvx, mcp-memgraph, GitHub MCP, write mcp.json
-    install_optional_deps # ffmpeg, yt-dlp, vector dimension fix
+    run_step "Git Hooks"         install_git_hooks
+    run_step "Dep Allowlist"     setup_dep_allowlist
+    run_step "Memgraph"          setup_memgraph
+    run_step "Ollama"            setup_ollama
+    run_step "MCP Servers"       setup_mcp_servers
+    run_step "Optional Deps"     install_optional_deps
     setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
     schedule_bootstrap    # Queue + launch codebase indexing in background
     setup_api_keys        # Interactive: prompt for keys
@@ -2274,6 +2302,11 @@ main() {
   dedup_skills_extensions
   run_verification
   print_quickstart
+
+  # Clear checkpoint on successful completion
+  if type clear_checkpoint &>/dev/null; then
+    clear_checkpoint
+  fi
 
   # Ensure installer exit trap doesn't print error message on clean exit
   trap - EXIT

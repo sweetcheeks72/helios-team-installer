@@ -295,7 +295,7 @@ Write-Host ""
 # ── Step 5b — Run the bootstrap (with one automatic retry on failure) ─────────
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-& wsl -d Ubuntu -- bash -c wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+& wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
 $wslExit = $LASTEXITCODE
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -305,14 +305,14 @@ if ($wslExit -ne 0) {
     Write-Warn "Bootstrap exited with code $wslExit — retrying once..."
     Write-Host ""
     Write-Host "  If you see errors above, common fixes:" -ForegroundColor Yellow
-    Write-Host "    - Check internet:   wsl -d Ubuntu -- ping -c1 github.com" -ForegroundColor Cyan
-    Write-Host "    - Check disk space: wsl -d Ubuntu -- df -h" -ForegroundColor Cyan
+    Write-Host "    - Check internet:   wsl -d $ubuntuDistro -- ping -c1 github.com" -ForegroundColor Cyan
+    Write-Host "    - Check disk space: wsl -d $ubuntuDistro -- df -h" -ForegroundColor Cyan
     Write-Host ""
     Read-Host "  Press Enter to retry"
     Write-Host ""
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin (retry) ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-    & wsl -d Ubuntu -- bash -c wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    & wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
     $wslExit = $LASTEXITCODE
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray

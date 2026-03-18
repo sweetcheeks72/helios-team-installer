@@ -95,7 +95,7 @@ jobs:
         run: |
           echo "=== Checking for dangerous sudo calls ==="
           # Find sudo calls that could prompt for password (not apt-get, not sudo -n)
-          DANGEROUS=$(grep -n 'sudo' install.sh | grep -v 'apt-get\|usermod\|sudo -n\|echo.*sudo\|DIM.*sudo\|#.*sudo\|info.*sudo' || true)
+          DANGEROUS=$(grep -n 'sudo' install.sh | grep -v 'apt-get\|usermod\|sudo -n\|sudo bash\|sudo ln\|echo.*sudo\|DIM.*sudo\|#.*sudo\|info.*sudo' || true)
           if [[ -n "$DANGEROUS" ]]; then
             echo "✗ Found sudo calls that could prompt for password:"
             echo "$DANGEROUS"

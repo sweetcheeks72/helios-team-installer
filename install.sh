@@ -797,8 +797,22 @@ install_packages() {
     cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
   fi
 
-  run_with_spinner "Running helios update (installing/verifying packages)" \
-    helios update || {
+  # Resolve the actual CLI binary — bypass the helios wrapper to avoid
+  # infinite loop (wrapper's update calls install.sh which calls this function)
+  local cli_bin=""
+  # Try npm global prefix
+  cli_bin="$(npm prefix -g 2>/dev/null)/bin/helios" 2>/dev/null
+  if [[ ! -x "$cli_bin" ]] || grep -q "helios — AI operating layer" "$cli_bin" 2>/dev/null; then
+    # That's the wrapper, not the CLI. Try the pi binary name from our fork.
+    cli_bin="$(npm prefix -g 2>/dev/null)/bin/pi" 2>/dev/null
+  fi
+  # Final fallback: npx
+  if [[ ! -x "$cli_bin" ]]; then
+    cli_bin="npx @helios-agent/cli"
+  fi
+  
+  run_with_spinner "Running package sync ($cli_bin update)" \
+    $cli_bin update || {
     if [[ "$bundled_count" -ge 15 ]]; then
       warn "helios update had issues, but bundled packages are available"
     else

@@ -173,6 +173,13 @@ jobs:
           fi
           echo "✓ helios symlinks removed"
           
+          # npm package should be gone
+          if npm ls -g @mariozechner/pi-coding-agent --depth=0 &>/dev/null; then
+            echo "✗ @mariozechner/pi-coding-agent still installed after uninstall"
+            exit 1
+          fi
+          echo "✓ npm package removed"
+          
           echo "✓ Uninstall verification passed"
 
       - name: Summary

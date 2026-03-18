@@ -96,18 +96,27 @@ if [[ -d "$PI_DIR" ]]; then
   fi
 fi
 
-# ─── 3. Remove Helios CLI ─────────────────────────────────────────────────────────
-if command -v helios &>/dev/null; then
-  ask "Remove Helios CLI (npm uninstall -g @helios-agent/cli)? [y/N]:"
-  if confirm_or_yes; then
-    if npm uninstall -g @helios-agent/cli 2>/dev/null; then
-      success "Helios CLI removed"
+# ─── 3. Remove CLI npm packages ──────────────────────────────────────────────
+# The CLI may be installed as either package depending on version
+CLI_FOUND=false
+for pkg in "@mariozechner/pi-coding-agent" "@helios-agent/cli"; do
+  if npm ls -g "$pkg" --depth=0 &>/dev/null; then
+    CLI_FOUND=true
+    ask "Remove $pkg (npm global package)? [y/N]:"
+    if confirm_or_yes; then
+      if npm uninstall -g "$pkg" 2>/dev/null; then
+        success "$pkg removed"
+      else
+        warn "Could not remove $pkg — run: npm uninstall -g $pkg"
+      fi
     else
-      warn "Could not remove Helios CLI automatically — run: npm uninstall -g @helios-agent/cli"
+      info "Keeping $pkg"
     fi
-  else
-    info "Keeping Helios CLI"
   fi
+done
+
+if [[ "$CLI_FOUND" == false ]]; then
+  info "No CLI npm packages found to remove"
 fi
 
 # ─── Remove Helios CLI symlinks ──────────────────────────────────────────────

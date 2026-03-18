@@ -5,57 +5,22 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 # =============================================================================
 
+# ─── Windows Detection ────────────────────────────────────────────────────────
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo ""
+    echo "Helios requires WSL. Run in PowerShell:"
+    echo "  irm https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/install.ps1 | iex"
+    echo "See: https://learn.microsoft.com/en-us/windows/wsl/install"
+    exit 1
+    ;;
+esac
+
+# ─── Strict mode — but with error trap so failures are VISIBLE ────────────────
 set -euo pipefail
-
-# ─── Windows Detection — WSL-First Approach ──────────────────────────────────
-# If running in Git Bash, MSYS2, MINGW, or Cygwin on Windows, guide user to WSL.
-detect_windows() {
-  local uname_out
-  uname_out="$(uname -s 2>/dev/null || echo "Unknown")"
-  
-  case "$uname_out" in
-    MINGW*|MSYS*|CYGWIN*)
-      echo ""
-      echo "═══════════════════════════════════════════════════════════════"
-      echo "  Helios requires WSL (Windows Subsystem for Linux)"
-      echo "═══════════════════════════════════════════════════════════════"
-      echo ""
-      echo "  You're running in Git Bash/MSYS — this won't work."
-      echo "  Helios needs a full Linux environment via WSL."
-      echo ""
-      echo "  Option 1 — PowerShell (recommended):"
-      echo "  Open PowerShell and run:"
-      echo ""
-      echo "    irm https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/install.ps1 | iex"
-      echo ""
-      echo "  Option 2 — Command Prompt (no PowerShell needed):"
-      echo "  Open CMD as Administrator and run:"
-      echo ""
-      echo "    curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/install.bat -o %TEMP%\\install-helios.bat && %TEMP%\\install-helios.bat"
-      echo ""
-      echo "  Option 3 — Manual WSL setup:"
-      echo "  In PowerShell or CMD as Admin:"
-      echo ""
-      echo "    wsl --install"
-      echo ""
-      echo "  Then restart your computer, open Ubuntu from the Start"
-      echo "  menu, and run:"
-      echo ""
-      echo "    curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
-      echo ""
-      echo "  Need help? See: https://learn.microsoft.com/en-us/windows/wsl/install"
-      echo "═══════════════════════════════════════════════════════════════"
-      echo ""
-      exit 1
-      ;;
-  esac
-}
-
-detect_windows
+trap 'echo ""; echo "✗ Bootstrap failed at line $LINENO. Re-run to retry (safe — idempotent)."; echo "  If stuck, run manually: bash ~/helios-team-installer/install.sh"' ERR
 
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
-# When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
-# Reopen stdin from /dev/tty so git clone, read, etc. can interact with the user.
 if [[ ! -t 0 ]]; then
   if [[ -e /dev/tty ]]; then
     exec < /dev/tty
@@ -66,6 +31,84 @@ if [[ ! -t 0 ]]; then
   fi
 fi
 
+# ─── Immediate output — user sees this first, before anything can hang ────────
+echo ""
+echo "  ┌─────────────────────────────────────────┐"
+echo "  │  helios. — installing...                 │"
+echo "  └─────────────────────────────────────────┘"
+echo ""
+
+PLATFORM="$(uname -s)"
+ARCH="$(uname -m)"
+INSTALLER_DIR="$HOME/helios-team-installer"
+INSTALLER_REPO="https://github.com/sweetcheeks72/helios-team-installer.git"
+
+# ─── macOS: Xcode Command Line Tools (MUST come before git or brew) ──────────
+# On fresh Macs, /usr/bin/git is a shim that triggers a GUI install dialog for
+# Xcode CLT. This dialog appears BEHIND other windows and hangs the installer.
+# Fix: detect and install CLT non-interactively before touching git or brew.
+if [[ "$PLATFORM" == "Darwin" ]]; then
+  if ! xcode-select -p &>/dev/null; then
+    echo "  ⬇  Installing Xcode Command Line Tools (required for git + brew)..."
+    echo "     This may take 2-5 minutes. Please wait..."
+    echo ""
+
+    # Method 1: Non-interactive install via softwareupdate (preferred — no GUI popup)
+    # Create the trigger file that makes softwareupdate list CLT
+    touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress 2>/dev/null || true
+    CLT_PACKAGE=$(softwareupdate -l 2>/dev/null | grep -o ".*Command Line Tools.*" | grep -v "^\\*" | sed 's/^[[:space:]]*//' | sort -V | tail -1)
+
+    if [[ -n "$CLT_PACKAGE" ]]; then
+      echo "     Found: $CLT_PACKAGE"
+      echo "     Installing (this is the slow part)..."
+      if sudo softwareupdate -i "$CLT_PACKAGE" --verbose 2>&1 | while IFS= read -r line; do
+        # Show progress dots so user knows it's working
+        printf "." >&2
+      done; then
+        echo ""
+        echo "  ✓  Xcode Command Line Tools installed"
+      else
+        echo ""
+        echo "  ⚠  softwareupdate install failed — trying xcode-select..."
+      fi
+    fi
+    rm -f /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress 2>/dev/null || true
+
+    # Method 2: Fallback to xcode-select --install (triggers GUI but we warn user)
+    if ! xcode-select -p &>/dev/null; then
+      echo ""
+      echo "  ──────────────────────────────────────────────────────────"
+      echo "  A dialog box should appear asking to install developer tools."
+      echo "  Click 'Install' and wait for it to complete, then re-run:"
+      echo ""
+      echo "    curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+      echo "  ──────────────────────────────────────────────────────────"
+      echo ""
+      xcode-select --install 2>/dev/null || true
+      # Wait up to 60 seconds for CLT to appear (user clicking Install in dialog)
+      echo "  Waiting for Xcode CLT installation..."
+      for i in $(seq 1 60); do
+        if xcode-select -p &>/dev/null; then
+          echo "  ✓  Xcode Command Line Tools installed"
+          break
+        fi
+        sleep 5
+        printf "." >&2
+      done
+      echo ""
+
+      if ! xcode-select -p &>/dev/null; then
+        echo "  ✗  Xcode CLT not installed yet."
+        echo "    Complete the install dialog, then re-run this command."
+        exit 1
+      fi
+    fi
+  else
+    echo "  ✓  Xcode Command Line Tools"
+  fi
+fi
+
+# ─── Colors (safe to use now that we've printed immediate output) ─────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -74,34 +117,8 @@ BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
 
-INSTALLER_DIR="$HOME/helios-team-installer"
-INSTALLER_REPO="https://github.com/sweetcheeks72/helios-team-installer.git"
-
-echo ""
-echo -e "${BOLD}${CYAN}"
-cat << 'BANNER'
-  ╔═══════════════════════════════════════════════════════════════╗
-  ║                                                               ║
-  ║    ██╗  ██╗███████╗██╗     ██╗ ██████╗ ███████╗              ║
-  ║    ██║  ██║██╔════╝██║     ██║██╔═══██╗██╔════╝              ║
-  ║    ███████║█████╗  ██║     ██║██║   ██║███████╗              ║
-  ║    ██╔══██║██╔══╝  ██║     ██║██║   ██║╚════██║              ║
-  ║    ██║  ██║███████╗███████╗██║╚██████╔╝███████║              ║
-  ║    ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝ ╚═════╝ ╚══════╝              ║
-  ║                                                               ║
-  ║              One-Command Bootstrap                            ║
-  ║                                                               ║
-  ╚═══════════════════════════════════════════════════════════════╝
-BANNER
-echo -e "${RESET}"
-echo -e "  ${DIM}Setting up prerequisites — this may take 1-2 minutes...${RESET}"
-echo ""
-
-# ─── Auto-install Prerequisites ───────────────────────────────────────────────
-echo -e "  ${BOLD}Installing prerequisites...${RESET}"
-
-PLATFORM="$(uname -s)"
-ARCH="$(uname -m)"
+# ─── Prerequisites ────────────────────────────────────────────────────────────
+echo -e "  ${BOLD}Checking prerequisites...${RESET}"
 
 # Homebrew (macOS only)
 if [[ "$PLATFORM" == "Darwin" ]] && ! command -v brew &>/dev/null; then
@@ -129,7 +146,6 @@ if [[ "$node_ok" == false ]]; then
   if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
     brew install node 2>&1
   elif command -v apt-get &>/dev/null; then
-    # Use NodeSource for Node 22 LTS on Ubuntu/Debian/WSL
     if command -v curl &>/dev/null; then
       curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash - 2>/dev/null
       sudo apt-get install -y nodejs 2>/dev/null
@@ -140,7 +156,7 @@ if [[ "$node_ok" == false ]]; then
   command -v node &>/dev/null && echo -e "  ${GREEN}✓${RESET} Node.js $(node -v) installed" || { echo -e "  ${RED}✗${RESET} Node.js install failed — install manually: https://nodejs.org"; exit 1; }
 fi
 
-# git
+# git (CLT already installed above, so git should work now)
 if command -v git &>/dev/null; then
   echo -e "  ${GREEN}✓${RESET} git $(git --version | awk '{print $3}')"
 else
@@ -153,7 +169,7 @@ else
   command -v git &>/dev/null && echo -e "  ${GREEN}✓${RESET} git installed" || { echo -e "  ${RED}✗${RESET} git install failed"; exit 1; }
 fi
 
-# npm (comes with node, but verify)
+# npm (comes with node)
 if command -v npm &>/dev/null; then
   echo -e "  ${GREEN}✓${RESET} npm $(npm -v)"
 else

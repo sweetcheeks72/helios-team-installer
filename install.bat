@@ -106,7 +106,24 @@ if %errorlevel% neq 0 (
     pause
     exit /b 0
 )
-echo  [+] Ubuntu found in WSL — OK
+
+:: Detect actual Ubuntu distro name (Ubuntu, Ubuntu-22.04, Ubuntu-24.04, etc.)
+:: Use PowerShell to avoid UTF-16 encoding issues from wsl -l -q
+set "_UBUNTU_DISTRO="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "(wsl -l -q | Where-Object { $_ -match '^Ubuntu' } | Select-Object -First 1).Trim()"`) do (
+    set "_UBUNTU_DISTRO=%%D"
+)
+
+if "%_UBUNTU_DISTRO%"=="" (
+    echo  [!] No Ubuntu distribution found in WSL.
+    echo      Available distributions:
+    wsl -l -v
+    echo.
+    echo      Install Ubuntu with:  wsl --install -d Ubuntu
+    exit /b 1
+)
+
+echo  [+] Detected Ubuntu distro: %_UBUNTU_DISTRO%
 echo.
 
 :: ─── Step 5a — Verify Ubuntu has completed first-run initialization ──────────
@@ -121,7 +138,7 @@ set /a _INIT_ATTEMPTS+=1
 echo  [>>] Testing Ubuntu initialization (attempt %_INIT_ATTEMPTS% of 3)...
 
 set _WSL_TEST=
-for /f "delims=" %%O in ('wsl -d Ubuntu -- echo ready 2^>^&1') do set _WSL_TEST=%%O
+for /f "delims=" %%O in ('wsl -d %_UBUNTU_DISTRO% -- echo ready 2^>^&1') do set _WSL_TEST=%%O
 echo "%_WSL_TEST%" | find "ready" >nul 2>&1
 if %errorlevel% equ 0 goto wsl_initialized
 
@@ -156,17 +173,17 @@ echo  This will install: Pi CLI, Helios agents, skills, extensions,
 echo  Memgraph, Ollama, MCP servers, and configure your API keys.
 echo.
 
-wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+wsl -d %_UBUNTU_DISTRO% -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 if %errorlevel% neq 0 (
     echo.
     echo  [!] Bootstrap exited with an error. Retrying once...
     echo.
     echo      If you see errors above, common fixes:
-    echo        - Check internet:   wsl -d Ubuntu -- ping github.com
+    echo        - Check internet:   wsl -d %_UBUNTU_DISTRO% -- ping github.com
     echo        - Check disk space in Ubuntu
     echo.
     pause
-    wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    wsl -d %_UBUNTU_DISTRO% -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
     if %errorlevel% neq 0 (
         echo.
         echo  [!] Bootstrap failed after retry.
@@ -200,7 +217,7 @@ if not exist "%SHIM_DIR%" (
 :: Write helios.cmd
 (
     echo @echo off
-    echo wsl -d Ubuntu -- helios %%*
+    echo wsl -d %_UBUNTU_DISTRO% -- helios %%*
 ) > "%SHIM_DIR%\helios.cmd"
 if %errorlevel% neq 0 (
     echo  [!] Failed to write helios.cmd to %SHIM_DIR%
@@ -212,7 +229,7 @@ echo  [+] Created: %SHIM_DIR%\helios.cmd
 :: Write pi.cmd
 (
     echo @echo off
-    echo wsl -d Ubuntu -- pi %%*
+    echo wsl -d %_UBUNTU_DISTRO% -- pi %%*
 ) > "%SHIM_DIR%\pi.cmd"
 if %errorlevel% neq 0 (
     echo  [!] Failed to write pi.cmd to %SHIM_DIR%

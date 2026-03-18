@@ -141,6 +141,40 @@ jobs:
       - name: verify.sh
         run: bash verify.sh 2>&1 | tee /tmp/verify.log
 
+      - name: Install bats-core
+        run: brew install bats-core
+
+      - name: Run bats unit tests
+        run: bats --tap tests/unit_tests.bats
+
+      - name: "Uninstall test"
+        run: |
+          echo "=== Running uninstall --yes ==="
+          bash uninstall.sh --yes 2>&1 | tee /tmp/uninstall.log
+          echo "✓ Uninstall completed"
+          
+          # Verify cleanup
+          if [[ -d ~/.pi/agent ]]; then
+            echo "✗ ~/.pi/agent still exists after uninstall"
+            exit 1
+          fi
+          echo "✓ ~/.pi/agent removed"
+          
+          if [[ -d ~/.pi ]]; then
+            echo "✗ ~/.pi still exists after uninstall"
+            exit 1
+          fi
+          echo "✓ ~/.pi removed"
+          
+          # Symlinks should be gone
+          if [[ -L /usr/local/bin/helios ]] || [[ -L "$HOME/.local/bin/helios" ]]; then
+            echo "✗ helios symlinks still exist"
+            exit 1
+          fi
+          echo "✓ helios symlinks removed"
+          
+          echo "✓ Uninstall verification passed"
+
       - name: Summary
         if: always()
         run: |
@@ -164,4 +198,5 @@ jobs:
             /tmp/install-2.log
             /tmp/feature-parity.log
             /tmp/verify.log
+            /tmp/uninstall.log
             install.log

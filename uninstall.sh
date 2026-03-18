@@ -8,6 +8,14 @@
 
 set -uo pipefail
 
+# ─── Flag Parsing ─────────────────────────────────────────────────────────────
+YES_MODE=false
+for arg in "$@"; do
+  case "$arg" in
+    --yes|-y) YES_MODE=true ;;
+  esac
+done
+
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -22,6 +30,14 @@ success() { echo -e "${GREEN}  ✓ ${RESET}$*"; }
 warn()    { echo -e "${YELLOW}  ⚠ ${RESET}$*"; }
 error()   { echo -e "${RED}  ✗ ${RESET}$*"; }
 ask()     { echo -en "${YELLOW}  ? ${RESET}$* "; }
+
+confirm_or_yes() {
+  if [[ "$YES_MODE" == true ]]; then
+    return 0
+  fi
+  read -r response
+  [[ "$response" =~ ^[Yy]$ ]]
+}
 
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
@@ -39,8 +55,7 @@ echo ""
 
 # ─── Master Confirmation ──────────────────────────────────────────────────────
 ask "Are you sure you want to uninstall? [y/N]:"
-read -r confirm
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+if ! confirm_or_yes; then
   echo ""
   info "Uninstall cancelled"
   exit 0
@@ -56,8 +71,7 @@ if [[ -d "$PI_AGENT_DIR" || -L "$PI_AGENT_DIR" ]]; then
   fi
 
   ask "Remove ~/.pi/agent/ (Helios agent, configs, skills)? [y/N]:"
-  read -r remove_agent
-  if [[ "$remove_agent" =~ ^[Yy]$ ]]; then
+  if confirm_or_yes; then
     # Backup .env first
     if [[ -f "$PI_AGENT_DIR/.env" ]]; then
       env_backup="$HOME/.pi-agent-env.backup.$(date +%Y%m%d_%H%M%S)"
@@ -74,8 +88,7 @@ fi
 # ─── 2. Remove ~/.pi/ (packages cache etc.) ───────────────────────────────────
 if [[ -d "$PI_DIR" ]]; then
   ask "Remove entire ~/.pi/ directory (packages cache)? [y/N]:"
-  read -r remove_pi_dir
-  if [[ "$remove_pi_dir" =~ ^[Yy]$ ]]; then
+  if confirm_or_yes; then
     rm -rf "$PI_DIR"
     success "~/.pi/ removed"
   else
@@ -86,8 +99,7 @@ fi
 # ─── 3. Remove Helios CLI ─────────────────────────────────────────────────────────
 if command -v helios &>/dev/null; then
   ask "Remove Helios CLI (npm uninstall -g @helios-agent/cli)? [y/N]:"
-  read -r remove_pi_cli
-  if [[ "$remove_pi_cli" =~ ^[Yy]$ ]]; then
+  if confirm_or_yes; then
     if npm uninstall -g @helios-agent/cli 2>/dev/null; then
       success "Helios CLI removed"
     else
@@ -109,8 +121,7 @@ done
 # ─── 4. Remove Familiar Skills ────────────────────────────────────────────────
 if [[ -d "$FAMILIAR_DIR" ]]; then
   ask "Remove ~/.familiar/ (Familiar skills)? [y/N]:"
-  read -r remove_familiar
-  if [[ "$remove_familiar" =~ ^[Yy]$ ]]; then
+  if confirm_or_yes; then
     rm -rf "$FAMILIAR_DIR"
     success "~/.familiar/ removed"
   else
@@ -131,7 +142,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   echo ""
   echo -e "  ${BOLD}LaunchAgents${RESET}"
   for plist in com.helios.memgraph com.helios.skill-graph-daily com.helios.consolidation com.helios.improvement-lab; do
-    local pfile="$HOME/Library/LaunchAgents/${plist}.plist"
+    pfile="$HOME/Library/LaunchAgents/${plist}.plist"
     if [[ -f "$pfile" ]]; then
       launchctl bootout "gui/$(id -u)" "$pfile" 2>/dev/null || launchctl unload "$pfile" 2>/dev/null
       rm -f "$pfile"
@@ -153,8 +164,7 @@ fi
 for profile in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
   if grep -qF ".pi/agent/.env" "$profile" 2>/dev/null; then
     ask "Remove Helios .env source line from $profile? [y/N]:"
-    read -r remove_source
-    if [[ "$remove_source" =~ ^[Yy]$ ]]; then
+    if confirm_or_yes; then
       sed -i.bak '/.pi\/agent\/\.env/d' "$profile"
       sed -i.bak '/# Helios\/Pi API keys/d' "$profile"
       rm -f "${profile}.bak"

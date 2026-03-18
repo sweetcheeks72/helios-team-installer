@@ -161,6 +161,7 @@ REQUIRED_PACKAGES=(
   "pi-foreground-chains"
   "pi-annotate"
   "pi-boomerang"
+  "skills-hook"
   "pi-skill-palette"
   "pi-rewind-hook"
   "pi-prompt-template-model"

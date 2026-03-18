@@ -132,11 +132,13 @@ $wslListRaw = & wsl --list --verbose 2>&1
 $wslList    = $wslListRaw | Out-String
 
 $ubuntuReady = $false
+$ubuntuDistro = "Ubuntu"  # Default; updated if versioned variant found
 foreach ($line in $wslListRaw) {
     # Line format: "  Ubuntu   Running   2" (spaces, optional *, name, state, version)
     $trimmed = $line -replace '[^\x20-\x7E]', '' # strip non-ASCII (BOM, utf-16 nulls)
     $trimmed = $trimmed.Trim().TrimStart('*').Trim()
-    if ($trimmed -match '^Ubuntu') {
+    if ($trimmed -match '^(Ubuntu[^\s]*)') {
+        $ubuntuDistro = $Matches[1]  # Capture actual name (Ubuntu, Ubuntu-22.04, etc.)
         # Check WSL version column — we want version 2
         if ($trimmed -match '\s+2\s*$') {
             $ubuntuReady = $true
@@ -261,7 +263,7 @@ $ubuntuReady    = $false
 while (-not $ubuntuReady -and $initAttempt -le $maxInitRetries) {
     $initAttempt++
     Write-Host "  [»] Testing Ubuntu initialization (attempt $initAttempt of $maxInitRetries)..." -ForegroundColor DarkGray
-    $testOutput = (& wsl -d Ubuntu -- echo ready 2>&1) -join " "
+    $testOutput = (& wsl -d $ubuntuDistro -- echo ready 2>&1) -join " "
 
     if ($testOutput.Trim() -eq 'ready') {
         $ubuntuReady = $true
@@ -293,7 +295,7 @@ Write-Host ""
 # ── Step 5b — Run the bootstrap (with one automatic retry on failure) ─────────
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-& wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+& wsl -d Ubuntu -- bash -c wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
 $wslExit = $LASTEXITCODE
 Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -310,7 +312,7 @@ if ($wslExit -ne 0) {
     Write-Host ""
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session begin (retry) ┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
 
-    & wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    & wsl -d Ubuntu -- bash -c wsl -d $ubuntuDistro -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 
     $wslExit = $LASTEXITCODE
     Write-Host "  ┄┄┄┄┄┄┄┄┄┄ WSL session end ┄┄┄┄┄┄┄┄┄┄┄" -ForegroundColor DarkGray
@@ -345,37 +347,25 @@ if (-not (Test-Path $shimDir)) {
 
 # ── helios.cmd ────────────────────────────────────────────────────────────────
 $heliosCmdPath = Join-Path $shimDir 'helios.cmd'
-$heliosCmdContent = @'
-@echo off
-wsl -d Ubuntu -- helios %*
-'@
+$heliosCmdContent = "@echo off`r`nwsl -d $ubuntuDistro -- helios %*"
 Set-Content -Path $heliosCmdPath -Value $heliosCmdContent -Encoding ASCII -Force
 Write-OK "Written: helios.cmd"
 
 # ── helios.ps1 ───────────────────────────────────────────────────────────────
 $heliosPs1Path = Join-Path $shimDir 'helios.ps1'
-$heliosPs1Content = @'
-$wslArgs = @('-d', 'Ubuntu', '--', 'helios') + $args
-& wsl @wslArgs
-'@
+$heliosPs1Content = "`$wslArgs = @('-d', '$ubuntuDistro', '--', 'helios') + `$args`n& wsl @wslArgs"
 Set-Content -Path $heliosPs1Path -Value $heliosPs1Content -Encoding UTF8 -Force
 Write-OK "Written: helios.ps1"
 
 # ── pi.cmd ────────────────────────────────────────────────────────────────────
 $piCmdPath = Join-Path $shimDir 'pi.cmd'
-$piCmdContent = @'
-@echo off
-wsl -d Ubuntu -- pi %*
-'@
+$piCmdContent = "@echo off`r`nwsl -d $ubuntuDistro -- pi %*"
 Set-Content -Path $piCmdPath -Value $piCmdContent -Encoding ASCII -Force
 Write-OK "Written: pi.cmd"
 
 # ── pi.ps1 ────────────────────────────────────────────────────────────────────
 $piPs1Path = Join-Path $shimDir 'pi.ps1'
-$piPs1Content = @'
-$wslArgs = @('-d', 'Ubuntu', '--', 'pi') + $args
-& wsl @wslArgs
-'@
+$piPs1Content = "`$wslArgs = @('-d', '$ubuntuDistro', '--', 'pi') + `$args`n& wsl @wslArgs"
 Set-Content -Path $piPs1Path -Value $piPs1Content -Encoding UTF8 -Force
 Write-OK "Written: pi.ps1"
 
@@ -403,7 +393,7 @@ if ($currentWslEnv) {
 
 $added = 0
 foreach ($key in $keysToShare) {
-    $entry = "$key/u"
+    $entry = "$key"  # No flag — API keys are plain strings, not paths
     if ($wslEnvParts -notcontains $entry) {
         $wslEnvParts += $entry
         $added++

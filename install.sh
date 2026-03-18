@@ -174,9 +174,9 @@ run_with_spinner() {
   start_spinner "$msg"
   local tmp_err
   tmp_err="$(mktemp)"
-  # Run command: stdout to log only (exec tee already copies stdout to log, so
-  # use /dev/null here to avoid double-write). Stderr to temp file for error display.
-  "$@" > /dev/null 2>"$tmp_err" &
+  # Run command: stdout to log file (not terminal — spinner is showing).
+  # Stderr to temp file for error display on failure.
+  "$@" >> "$LOG_FILE" 2>"$tmp_err" &
   local cmd_pid=$!
   # Use || cmd_exit=$? to prevent set -e from firing on failed wait, which would
   # skip stop_spinner and leave the terminal in a corrupt state.

@@ -2065,7 +2065,7 @@ install_optional_deps() {
   # Vector dimension migration (ensures Memgraph schema_version=2)
   local fix_script="$PI_AGENT_DIR/scripts/fix-vector-dimensions.sh"
   if [[ -f "$fix_script" ]] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    if docker ps --format '{{.Names}}' | grep -q "^memgraph$" 2>/dev/null; then
+    if docker ps --format '{{.Names}}' | grep -qE "^(memgraph|familiar-graph-1)$" 2>/dev/null; then
       bash "$fix_script" >> "$LOG_FILE" 2>&1 && info "Vector dimensions verified" || true
     fi
   fi
@@ -2287,7 +2287,7 @@ main() {
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites
     run_step "Helios CLI"            install_pi
-    run_step "Helios Agent"      setup_helios_agent
+    run_step "Helios Agent"      setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
     run_step "Helios CLI"        install_helios_cli
     run_step "Provider Selection" select_provider
   fi
@@ -2331,5 +2331,8 @@ main() {
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
+${0}" ]]; then
   main "$@"
 fi

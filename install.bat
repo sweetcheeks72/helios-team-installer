@@ -156,7 +156,7 @@ echo  This will install: Pi CLI, Helios agents, skills, extensions,
 echo  Memgraph, Ollama, MCP servers, and configure your API keys.
 echo.
 
-wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
 if %errorlevel% neq 0 (
     echo.
     echo  [!] Bootstrap exited with an error. Retrying once...
@@ -166,7 +166,7 @@ if %errorlevel% neq 0 (
     echo        - Check disk space in Ubuntu
     echo.
     pause
-    wsl -d Ubuntu -- bash -c "curl --max-time 120 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
+    wsl -d Ubuntu -- bash -c "curl --max-time 600 -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
     if %errorlevel% neq 0 (
         echo.
         echo  [!] Bootstrap failed after retry.

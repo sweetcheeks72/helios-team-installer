@@ -149,7 +149,7 @@ if [[ "$PLATFORM" == "Darwin" ]] && ! command -v brew &>/dev/null; then
   HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/aec7285/install.sh"
   BREW_INSTALLER="/tmp/homebrew-install.sh"
   curl -fsSL "$HOMEBREW_INSTALL_URL" -o "$BREW_INSTALLER"
-  echo -e "  ${DIM}Homebrew installer downloaded — pinned to known-good commit aec7285${RESET}"
+  echo -e "  ${DIM}Downloading Homebrew installer...${RESET}"
   /bin/bash "$BREW_INSTALLER" </dev/null
   rm -f "$BREW_INSTALLER"
   # Add brew to PATH for this session
@@ -298,3 +298,4 @@ INSTALLER_COMMIT="$(git -C "$INSTALLER_DIR" rev-parse --short HEAD 2>/dev/null |
 echo -e "  ${DIM}Running install.sh from commit ${INSTALLER_COMMIT}${RESET}"
 
 exec bash "$INSTALLER_DIR/install.sh" "$@"
+"$INSTALLER_DIR/install.sh" "$@"

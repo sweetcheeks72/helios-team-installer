@@ -450,6 +450,15 @@ install_pi() {
     return 0
   fi
 
+  # Fix EACCES on Linux — set npm prefix to ~/.npm-global
+  local platform
+  platform="$(current_platform)"
+  if [[ "$platform" == "linux" ]] || [[ "$platform" == "wsl" ]]; then
+    mkdir -p "$HOME/.npm-global"
+    npm config set prefix "$HOME/.npm-global"
+    export PATH="$HOME/.npm-global/bin:$PATH"
+  fi
+
   info "Helios not found — installing via npm..."
   
   # Pre-flight: fix npm cache permissions (common macOS issue when npm was run with sudo)

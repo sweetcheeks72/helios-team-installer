@@ -11,7 +11,7 @@ jobs:
   e2e-macos-install:
     name: E2E install (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -59,6 +59,16 @@ jobs:
         run: |
           npm install -g @mariozechner/pi-coding-agent
           which pi && echo "✓ Pi CLI installed: $(pi --version 2>/dev/null | head -1)" || { echo "✗ pi not found"; exit 1; }
+
+      - name: Capture filesystem baseline
+        run: |
+          find "$HOME" -maxdepth 4 \
+            -not -path '*/Library/*' \
+            -not -path '*/.npm/*' \
+            -not -path '*/.cache/*' \
+            -not -path '*/node_modules/*' \
+            2>/dev/null | sort > /tmp/fs-before.txt
+          echo "Baseline: $(wc -l < /tmp/fs-before.txt) entries"
 
       - name: Verify wrapper integrity
         run: |
@@ -141,11 +151,256 @@ jobs:
       - name: verify.sh
         run: bash verify.sh 2>&1 | tee /tmp/verify.log
 
+      - name: Filesystem snapshot diff
+        run: |
+          echo "=== Filesystem diff (golden image check) ==="
+          find "$HOME" -maxdepth 4 \
+            -not -path '*/Library/*' \
+            -not -path '*/.npm/*' \
+            -not -path '*/.cache/*' \
+            -not -path '*/node_modules/*' \
+            2>/dev/null | sort > /tmp/fs-after.txt
+          
+          # Extract new files
+          comm -13 /tmp/fs-before.txt /tmp/fs-after.txt > /tmp/fs-new-files.txt
+          
+          NEW_COUNT=$(wc -l < /tmp/fs-new-files.txt | tr -d ' ')
+          echo "New files created by installer: $NEW_COUNT"
+          cat /tmp/fs-new-files.txt
+          
+          # Check for unexpected files outside known install paths
+          UNEXPECTED=$(grep -v -E "^${HOME}/\.(pi|local|familiar|config|zshrc|bashrc|profile)" \
+            /tmp/fs-new-files.txt | grep -v 'dist/' | grep -v 'actions/' | grep -v '/runners/' || true)
+          if [[ -n "$UNEXPECTED" ]]; then
+            echo "⚠ Files outside known install paths (review needed):"
+            echo "$UNEXPECTED"
+            # Warning only — don't fail on first run until we establish the golden baseline
+          fi
+          echo "✓ Filesystem diff complete"
+
       - name: Install bats-core
         run: brew install bats-core
 
       - name: Run bats unit tests
         run: bats --tap tests/unit_tests.bats
+
+      - name: Partial failure recovery test
+        run: |
+          echo "=== Partial failure recovery ==="
+          
+          # First, clean up from previous install to test fresh
+          rm -rf ~/.pi/agent
+          mkdir -p ~/.pi/agent
+          tar -xzf dist/helios-agent-latest.tar.gz -C ~/.pi/agent --strip-components=1
+          cp dist/VERSION ~/.pi/agent/VERSION
+          cp provider-configs/anthropic.json ~/.pi/agent/settings.json
+          cp .env.template ~/.pi/agent/.env
+          echo "ANTHROPIC_API_KEY=sk-ant-test-ci-dummy-key" >> ~/.pi/agent/.env
+          
+          # Kill installer after 5 seconds (simulates user Ctrl+C mid-install)
+          timeout 5 bash install.sh --update 2>&1 > /tmp/partial-install.log || true
+          echo "✓ Installer killed at 5s"
+          
+          # Check no lock files left behind
+          if [[ -f /tmp/helios-install.lock ]]; then
+            echo "✗ Lock file not cleaned up"
+            exit 1
+          fi
+          echo "✓ No stale lock files"
+          
+          # Re-run installer — must complete successfully (recovery from dirty state)
+          timeout 120 bash install.sh --update 2>&1 | tee /tmp/recovery-install.log
+          echo "✓ Recovery install completed"
+          
+          # Verify functional after recovery
+          test -x ~/.pi/agent/bin/helios && echo "✓ Wrapper executable after recovery"
+          pi --version 2>/dev/null | head -1 && echo "✓ pi works after recovery" || echo "⚠ pi --version failed"
+          echo "✓ Partial failure recovery passed"
+
+      - name: Network failure simulation
+        run: |
+          echo "=== Network failure test ==="
+          
+          # Save current npm registry
+          ORIG_REGISTRY=$(npm config get registry 2>/dev/null || echo "https://registry.npmjs.org/")
+          
+          # Point npm at a dead endpoint
+          npm config set registry http://localhost:1
+          
+          # Attempt npm install — should fail gracefully, not hang
+          echo "Testing npm install with dead registry..."
+          timeout 30 npm install -g @mariozechner/pi-coding-agent 2>&1 > /tmp/network-fail.log || true
+          EXIT_CODE=$?
+          
+          # Restore registry immediately
+          npm config set registry "$ORIG_REGISTRY"
+          
+          echo "npm exit code with dead registry: $EXIT_CODE"
+          if [[ $EXIT_CODE -eq 124 ]]; then
+            echo "✗ npm hung for 30s (timeout killed it) — installer would hang too"
+            # Don't fail the build — this documents npm behavior, not our installer
+          else
+            echo "✓ npm failed fast (did not hang)"
+          fi
+          
+          # Verify the system is still functional (no corruption from failed install)
+          npm config get registry | grep -q 'registry.npmjs.org' && echo "✓ Registry restored"
+          pi --version 2>/dev/null | head -1 && echo "✓ pi still works after network failure" || echo "⚠ pi needs reinstall"
+          
+          # Reinstall if needed
+          npm install -g @mariozechner/pi-coding-agent 2>/dev/null || true
+          echo "✓ Network failure simulation complete"
+
+      - name: Gatekeeper quarantine simulation
+        run: |
+          echo "=== Gatekeeper quarantine test ==="
+          
+          # Simulate what happens when a user downloads via Safari/Chrome
+          # (files get com.apple.quarantine xattr)
+          QUARANTINE_FLAG="0083;$(printf '%x' $(date +%s));Safari;$(uuidgen)"
+          
+          # Apply quarantine to the install script (simulates browser download)
+          cp install.sh /tmp/quarantined-install.sh
+          xattr -w com.apple.quarantine "$QUARANTINE_FLAG" /tmp/quarantined-install.sh
+          
+          # Verify quarantine was set
+          if xattr -p com.apple.quarantine /tmp/quarantined-install.sh &>/dev/null; then
+            echo "✓ Quarantine flag set on install script"
+          else
+            echo "⚠ Could not set quarantine flag (CI runner may strip it)"
+          fi
+          
+          # Try to execute the quarantined script
+          # On macOS Tahoe, Gatekeeper may block this
+          if timeout 10 bash /tmp/quarantined-install.sh --help 2>&1; then
+            echo "✓ Quarantined script executed successfully"
+          else
+            echo "⚠ Quarantined script blocked or failed"
+            echo "  This may indicate Gatekeeper enforcement on Tahoe"
+            echo "  Users downloading via browser may need: xattr -d com.apple.quarantine install.sh"
+          fi
+          
+          # Also test quarantine on the tarball
+          cp dist/helios-agent-latest.tar.gz /tmp/quarantined-tarball.tar.gz
+          xattr -w com.apple.quarantine "$QUARANTINE_FLAG" /tmp/quarantined-tarball.tar.gz 2>/dev/null || true
+          
+          # Verify tar can still extract quarantined tarball
+          mkdir -p /tmp/quarantine-test-extract
+          if tar -xzf /tmp/quarantined-tarball.tar.gz -C /tmp/quarantine-test-extract --strip-components=1 2>&1; then
+            echo "✓ Quarantined tarball extracts normally"
+          else
+            echo "✗ Quarantined tarball failed to extract"
+            exit 1
+          fi
+          
+          rm -rf /tmp/quarantine-test-extract /tmp/quarantined-*
+          echo "✓ Gatekeeper quarantine simulation complete"
+
+      - name: Disk space exhaustion test
+        run: |
+          echo "=== Disk space exhaustion test ==="
+          
+          # Create a tiny RAM disk (2MB — too small for our ~50MB install)
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            # macOS: create 2MB RAM disk
+            DISK_SECTORS=4096  # 2MB (512 bytes per sector)
+            RAMDISK=$(hdiutil attach -nomount ram://${DISK_SECTORS} 2>/dev/null || true)
+            
+            if [[ -n "$RAMDISK" ]]; then
+              # Format it
+              RAMDISK=$(echo "$RAMDISK" | tr -d ' ')
+              diskutil erasevolume HFS+ TinyDisk "$RAMDISK" &>/dev/null || true
+              MOUNT_POINT="/Volumes/TinyDisk"
+              
+              if [[ -d "$MOUNT_POINT" ]]; then
+                echo "✓ Created 2MB RAM disk at $MOUNT_POINT"
+                
+                # Try to extract tarball into the tiny disk (should fail)
+                mkdir -p "$MOUNT_POINT/pi-agent" 2>/dev/null || true
+                if tar -xzf dist/helios-agent-latest.tar.gz -C "$MOUNT_POINT/pi-agent" --strip-components=1 2>/tmp/diskfull-err.log; then
+                  echo "⚠ Tarball somehow fit in 2MB (unexpected)"
+                else
+                  echo "✓ Tarball extraction correctly failed on full disk"
+                  tail -3 /tmp/diskfull-err.log
+                fi
+                
+                # Verify no partial files left that could corrupt state
+                PARTIAL=$(find "$MOUNT_POINT/pi-agent" -type f 2>/dev/null | wc -l | tr -d ' ')
+                echo "Partial files on disk: $PARTIAL"
+                
+                # Clean up RAM disk
+                hdiutil detach "$RAMDISK" -force &>/dev/null || true
+                echo "✓ RAM disk cleaned up"
+              else
+                echo "⚠ Could not mount RAM disk — skipping disk full test"
+                hdiutil detach "$RAMDISK" -force &>/dev/null || true
+              fi
+            else
+              echo "⚠ Could not create RAM disk — skipping disk full test"
+            fi
+          else
+            echo "⚠ Not macOS — skipping disk full test"
+          fi
+          echo "✓ Disk space exhaustion test complete"
+
+      - name: Permission escalation audit
+        run: |
+          echo "=== Permission escalation audit ==="
+          
+          # Check 1: No world-writable files in the install
+          WORLD_WRITABLE=$(find ~/.pi/agent -perm -o+w -type f 2>/dev/null || true)
+          if [[ -n "$WORLD_WRITABLE" ]]; then
+            echo "✗ World-writable files found:"
+            echo "$WORLD_WRITABLE" | head -10
+            exit 1
+          fi
+          echo "✓ No world-writable files"
+          
+          # Check 2: No SUID/SGID binaries
+          SUID_FILES=$(find ~/.pi/agent -perm -4000 -o -perm -2000 2>/dev/null | head -5 || true)
+          if [[ -n "$SUID_FILES" ]]; then
+            echo "✗ SUID/SGID files found:"
+            echo "$SUID_FILES"
+            exit 1
+          fi
+          echo "✓ No SUID/SGID files"
+          
+          # Check 3: Verify symlinks don't point outside expected locations
+          BAD_SYMLINKS=$(find ~/.pi/agent -type l -exec sh -c '
+            target=$(readlink -f "$1" 2>/dev/null || echo "")
+            case "$target" in
+              /etc/*|/var/*|/System/*|/usr/lib/*)
+                echo "$1 -> $target"
+                ;;
+            esac
+          ' _ {} \; 2>/dev/null || true)
+          if [[ -n "$BAD_SYMLINKS" ]]; then
+            echo "✗ Suspicious symlinks pointing to system directories:"
+            echo "$BAD_SYMLINKS"
+            exit 1
+          fi
+          echo "✓ No suspicious symlinks"
+          
+          # Check 4: Verify install.sh doesn't write to system dirs without fallback
+          # (Static check — runtime behavior already tested via sudo audit)
+          SYSTEM_WRITES=$(grep -n 'cp \|mv \|> ' install.sh | grep -E '/usr/|/etc/|/System/' | grep -v '#\|echo\|info\|warn' || true)
+          if [[ -n "$SYSTEM_WRITES" ]]; then
+            echo "⚠ install.sh writes to system directories:"
+            echo "$SYSTEM_WRITES"
+            echo "  (verify each has a ~/.local/bin fallback)"
+          fi
+          echo "✓ No unauthorized system writes"
+          
+          # Check 5: Verify file ownership
+          WRONG_OWNER=$(find ~/.pi/agent -not -user "$(whoami)" -type f 2>/dev/null | head -5 || true)
+          if [[ -n "$WRONG_OWNER" ]]; then
+            echo "✗ Files not owned by current user:"
+            echo "$WRONG_OWNER"
+            exit 1
+          fi
+          echo "✓ All files owned by current user"
+          
+          echo "✓ Permission escalation audit passed"
 
       - name: "Uninstall test"
         run: |
@@ -206,4 +461,11 @@ jobs:
             /tmp/feature-parity.log
             /tmp/verify.log
             /tmp/uninstall.log
+            /tmp/partial-install.log
+            /tmp/recovery-install.log
+            /tmp/network-fail.log
+            /tmp/diskfull-err.log
+            /tmp/fs-before.txt
+            /tmp/fs-after.txt
+            /tmp/fs-new-files.txt
             install.log

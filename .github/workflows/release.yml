@@ -23,6 +23,7 @@ on:
 
 permissions:
   contents: write   # Required to create GitHub Releases
+  id-token: write   # Required for Sigstore keyless signing (OIDC)
 
 jobs:
   build-and-release:
@@ -106,6 +107,54 @@ jobs:
           cat "${CHECKSUM}"
 
       # -----------------------------------------------------------------------
+      # 5b. Sigstore keyless signing (supply chain integrity)
+      # -----------------------------------------------------------------------
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3.8.1
+
+      - name: Sign release tarball (Sigstore keyless)
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          TARBALL="installer/dist/helios-agent-v${VERSION}.tar.gz"
+          LATEST="installer/dist/helios-agent-latest.tar.gz"
+          
+          echo "=== Signing versioned tarball ==="
+          cosign sign-blob "${TARBALL}" \
+            --bundle "${TARBALL}.sigstore.json" \
+            --yes
+          echo "✅ Signed: ${TARBALL}"
+          
+          echo "=== Signing latest tarball ==="
+          cosign sign-blob "${LATEST}" \
+            --bundle "${LATEST}.sigstore.json" \
+            --yes
+          echo "✅ Signed: ${LATEST}"
+          
+          echo ""
+          echo "Users can verify with:"
+          echo "  cosign verify-blob helios-agent-v${VERSION}.tar.gz \\"
+          echo "    --bundle helios-agent-v${VERSION}.tar.gz.sigstore.json \\"
+          echo "    --certificate-identity-regexp 'github.com/sweetcheeks72' \\"
+          echo "    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'"
+
+      # -----------------------------------------------------------------------
+      # 5c. SBOM generation (Software Bill of Materials)
+      # -----------------------------------------------------------------------
+      - name: Generate SBOM
+        run: |
+          # Install trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          
+          # Generate SBOM from the agent directory
+          trivy fs --format spdx-json \
+            --output installer/dist/helios-sbom.spdx.json \
+            "${HOME}/.pi/agent/"
+          
+          echo "✅ SBOM generated"
+          echo "Packages: $(jq '.packages | length' installer/dist/helios-sbom.spdx.json 2>/dev/null || echo 'N/A')"
+          echo "Size: $(du -h installer/dist/helios-sbom.spdx.json | cut -f1)"
+
+      # -----------------------------------------------------------------------
       # 6. Create the GitHub Release and upload assets
       # -----------------------------------------------------------------------
       - name: Create GitHub Release
@@ -130,6 +179,12 @@ jobs:
             # Verify checksum (macOS)
             shasum -a 256 -c helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz.sha256
 
+            # Verify Sigstore signature (requires cosign)
+            cosign verify-blob helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz \
+              --bundle helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz.sigstore.json \
+              --certificate-identity-regexp 'github.com/sweetcheeks72' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+
             # Extract
             tar -xzf helios-agent-v${{ steps.version.outputs.VERSION }}.tar.gz
             ```
@@ -143,8 +198,11 @@ jobs:
           files: |
             ${{ steps.artefacts.outputs.TARBALL }}
             ${{ steps.artefacts.outputs.CHECKSUM }}
+            ${{ steps.artefacts.outputs.TARBALL }}.sigstore.json
             installer/dist/VERSION
             installer/dist/helios-agent-latest.tar.gz
             installer/dist/helios-agent-latest.tar.gz.sha256
+            installer/dist/helios-agent-latest.tar.gz.sigstore.json
+            installer/dist/helios-sbom.spdx.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

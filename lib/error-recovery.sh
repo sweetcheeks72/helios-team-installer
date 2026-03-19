@@ -57,9 +57,10 @@ step_done() {
 # Prints ✗ FAILED on the same line, then runs diagnostics / troubleshooter.
 step_fail() {
   local error_msg="${1:-unknown error}"
+  local exit_code="${2:-1}"
   printf " ${RED}✗ FAILED${RESET}\n"
   echo -e "  ${RED}Error:${RESET} ${error_msg}" >&2
-  generate_diagnostic_dump "${_CURRENT_STEP_NAME:-unknown}" "$?"
+  generate_diagnostic_dump "${_CURRENT_STEP_NAME:-unknown}" "$exit_code"
   offer_troubleshoot "$error_msg" "${_CURRENT_STEP_NAME:-unknown}"
 }
 
@@ -460,7 +461,7 @@ run_step() {
     captured_output="$(cat "$tmp_output" 2>/dev/null)"
     rm -f "$tmp_output"
 
-    step_fail "$captured_output"
+    step_fail "$captured_output" "$exit_code"
 
     # ── Troubleshoot and optionally retry once ──────────────────────
     if offer_troubleshoot "$captured_output" "$step_name"; then

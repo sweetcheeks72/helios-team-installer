@@ -17,6 +17,21 @@ if [[ -f "$INSTALLER_DIR_EARLY/lib/error-recovery.sh" ]]; then
   source "$INSTALLER_DIR_EARLY/lib/error-recovery.sh"
 fi
 
+# ─── Source platform detection library ────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR_EARLY/lib/platform.sh" ]]; then
+  source "$INSTALLER_DIR_EARLY/lib/platform.sh"
+fi
+
+# ─── Source preserve-files library ────────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR_EARLY/lib/preserve-files.sh" ]]; then
+  source "$INSTALLER_DIR_EARLY/lib/preserve-files.sh"
+fi
+
+# ─── Source containers library ────────────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR_EARLY/lib/containers.sh" ]]; then
+  source "$INSTALLER_DIR_EARLY/lib/containers.sh"
+fi
+
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 for _arg in "$@"; do
   case "$_arg" in
@@ -70,21 +85,25 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Platform Detection ───────────────────────────────────────────────────────
-is_wsl() {
-  [[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null
-}
+# is_wsl and current_platform are provided by lib/platform.sh (sourced above).
+# These fallback definitions are only used if the lib failed to load.
+if ! declare -f is_wsl &>/dev/null; then
+  is_wsl() {
+    [[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null
+  }
 
-current_platform() {
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "macos"
-  elif is_wsl; then
-    echo "wsl"
-  elif [[ "$(uname -s)" == "Linux" ]]; then
-    echo "linux"
-  else
-    echo "unknown"
-  fi
-}
+  current_platform() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      echo "macos"
+    elif is_wsl; then
+      echo "wsl"
+    elif [[ "$(uname -s)" == "Linux" ]]; then
+      echo "linux"
+    else
+      echo "unknown"
+    fi
+  }
+fi
 
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
 # Respect NO_COLOR (https://no-color.org/) and dumb terminals
@@ -242,23 +261,27 @@ check_prerequisites() {
   fi
 
   # ── Helper: install a dependency ───────────────────────────────────────────
-  _install_dep() {
-    local cmd="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}"
-    if command -v "$cmd" &>/dev/null; then
-      return 0
-    fi
-    info "Installing $cmd..."
-    case "$platform" in
-      macos)
-        brew install "$brew_pkg" >> "$LOG_FILE" 2>&1 ;;
-      linux|wsl)
-        sudo apt-get install -y "$apt_pkg" >> "$LOG_FILE" 2>&1 ;;
-      *)
-        warn "$cmd: unsupported platform ($platform) — install manually"
-        return 1 ;;
-    esac
-    command -v "$cmd" &>/dev/null
-  }
+  # _install_dep is provided by lib/platform.sh (sourced at top of script).
+  # Fallback inline definition used only when the lib failed to load.
+  if ! declare -f _install_dep &>/dev/null; then
+    _install_dep() {
+      local cmd="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}"
+      if command -v "$cmd" &>/dev/null; then
+        return 0
+      fi
+      info "Installing $cmd..."
+      case "$platform" in
+        macos)
+          brew install "$brew_pkg" >> "$LOG_FILE" 2>&1 ;;
+        linux|wsl)
+          sudo apt-get install -y "$apt_pkg" >> "$LOG_FILE" 2>&1 ;;
+        *)
+          warn "$cmd: unsupported platform ($platform) — install manually"
+          return 1 ;;
+      esac
+      command -v "$cmd" &>/dev/null
+    }
+  fi
 
   # ── Node.js 18+ ────────────────────────────────────────────────────────────
   local node_ok=false
@@ -273,20 +296,9 @@ check_prerequisites() {
 
   if [[ "$node_ok" == false ]]; then
     info "Installing Node.js..."
-    case "$platform" in
-      macos)
-        brew install node >> "$LOG_FILE" 2>&1 ;;
-      linux|wsl)
-        # NodeSource for Node 22 LTS (Ubuntu/Debian)
-        if command -v curl &>/dev/null; then
-          curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | sudo bash - >> "$LOG_FILE" 2>&1
-          sudo apt-get install -y nodejs >> "$LOG_FILE" 2>&1
-        else
-          sudo apt-get update -y >> "$LOG_FILE" 2>&1
-          sudo apt-get install -y nodejs npm >> "$LOG_FILE" 2>&1
-        fi
-        ;;
-    esac
+    # Delegates to lib/platform.sh's _install_nodejs() which handles
+    # apt/dnf/pacman/zypper on Linux/WSL and brew on macOS.
+    _install_nodejs
     if command -v node &>/dev/null && node -e "process.exit(parseInt(process.version.slice(1)) < 18 ? 1 : 0)" 2>/dev/null; then
       success "Node.js $(node -v) installed"
     else
@@ -496,15 +508,10 @@ setup_helios_agent() {
     cp -a "$PI_AGENT_DIR" "$backup_dir"
     info "Backed up current agent to $backup_dir"
 
-    # Stash user files before extraction
-    # PRESERVE_FILES — MUST MATCH auto-update.ts PRESERVE_FILES list
+    # Stash user files before extraction (delegates to lib/preserve-files.sh)
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
-    done
+    stash_preserve_files "$PI_AGENT_DIR" "$tmp_stash"
 
     # Download and extract new tarball
     local tmp_tarball
@@ -549,12 +556,8 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_tarball"
 
-    # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-    done
+    # Restore user files (delegates to lib/preserve-files.sh)
+    restore_preserve_files "$tmp_stash" "$PI_AGENT_DIR"
     rm -rf "$tmp_stash"
 
     success "Helios agent updated to $remote_version"
@@ -571,14 +574,10 @@ setup_helios_agent() {
   if [[ -d "$PI_AGENT_DIR/.git" ]]; then
     info "Detected git-based install — migrating to tarball distribution…"
 
-    # Stash user files
+    # Stash user files (delegates to lib/preserve-files.sh)
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
-    done
+    stash_preserve_files "$PI_AGENT_DIR" "$tmp_stash"
 
     # Backup the full git install
     local backup_dir="${PI_AGENT_DIR}.git-backup.$(date +%Y%m%d_%H%M%S)"
@@ -628,12 +627,8 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_tarball"
 
-    # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-    done
+    # Restore user files (delegates to lib/preserve-files.sh)
+    restore_preserve_files "$tmp_stash" "$PI_AGENT_DIR"
     rm -rf "$tmp_stash"
 
     success "Migrated from git to tarball distribution ($(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo 'unknown'))"
@@ -1148,24 +1143,8 @@ persist_runtime_contract() {
 
   # Step 2 — use caller-resolved container if provided
   if [[ -z "$resolved_container" ]]; then
-    # Priority: exact 'memgraph' → compose-label → legacy 'familiar-graph-1'
-    local _ps_names
-    _ps_names=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
-    for _mgn in memgraph familiar-graph-1; do
-      if echo "$_ps_names" | grep -q "^${_mgn}$" 2>/dev/null; then
-        resolved_container="$_mgn"
-        break
-      fi
-    done
-    # Compose-label discovery if still unresolved
-    if [[ -z "$resolved_container" ]]; then
-      local _compose_name
-      _compose_name=$(docker ps --format '{{.Names}}\t{{.Labels}}' 2>/dev/null \
-        | grep -i 'com.docker.compose.service=memgraph' | head -1 | awk '{print $1}' || true)
-      [[ -n "$_compose_name" ]] && resolved_container="$_compose_name"
-    fi
-    # Default to nominal 'memgraph' if nothing is running
-    [[ -z "$resolved_container" ]] && resolved_container="memgraph"
+    # Resolve container via shared lib (containers.sh); fallback to 'memgraph'
+    resolved_container=$(resolve_memgraph_container) || resolved_container="memgraph"
   fi
 
   mkdir -p "$runtime_dir"
@@ -1220,15 +1199,13 @@ setup_memgraph() {
     return 0
   fi
 
-  # Check if a Memgraph container already exists
-  # Priority: exact 'memgraph' → legacy 'familiar-graph-1'
+  # Check if a Memgraph container already exists (running or stopped)
   local mg_container=""
-  for name in memgraph familiar-graph-1; do
-    if docker ps -a --format '{{.Names}}' | grep -q "^${name}$" 2>/dev/null; then
-      mg_container="$name"
-      break
-    fi
-  done
+  # resolve_memgraph_container returns 0 when a real container is found,
+  # 1 when it falls back to the default 'memgraph' name (no container present).
+  if ! mg_container=$(resolve_memgraph_container); then
+    mg_container=""  # No real container found — proceed to fresh install path
+  fi
 
   if [[ -n "$mg_container" ]]; then
     # Already exists — make sure it's running
@@ -1274,13 +1251,9 @@ setup_memgraph() {
     fi
   fi
 
-  # Apply graph schema — resolve running container (memgraph first, then legacy fallback)
+  # Apply graph schema — resolve running container via shared lib
   local mg_running=""
-  for _mn in memgraph familiar-graph-1; do
-    if docker ps --format '{{.Names}}' | grep -q "^${_mn}$" 2>/dev/null; then
-      mg_running="$_mn"; break
-    fi
-  done
+  mg_running=$(resolve_memgraph_container) || mg_running=""
   local schema="$PI_AGENT_DIR/skills/skill-graph/scripts/schema.cypher"
   if [[ -n "$mg_running" ]] && [[ -f "$schema" ]]; then
     docker exec -i "$mg_running" mgconsole --username memgraph --password memgraph \
@@ -2065,7 +2038,7 @@ install_optional_deps() {
   # Vector dimension migration (ensures Memgraph schema_version=2)
   local fix_script="$PI_AGENT_DIR/scripts/fix-vector-dimensions.sh"
   if [[ -f "$fix_script" ]] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    if docker ps --format '{{.Names}}' | grep -qE "^(memgraph|familiar-graph-1)$" 2>/dev/null; then
+    if is_memgraph_running 2>/dev/null; then
       bash "$fix_script" >> "$LOG_FILE" 2>&1 && info "Vector dimensions verified" || true
     fi
   fi
@@ -2170,12 +2143,15 @@ PLIST_EOF
   elif is_wsl; then
     # WSL: no systemd by default, no persistent cron. Use Windows Task Scheduler hints.
     info "WSL detected — background services work differently here"
+    # Resolve the actual container name once (C4: was hardcoded as helios-memgraph)
+    local mg_name
+    mg_name=$(resolve_memgraph_container) || mg_name="memgraph"
     echo ""
     echo -e "  ${DIM}WSL doesn't auto-start background services like macOS/Linux.${RESET}"
     echo -e "  ${DIM}You'll need to start services manually each session:${RESET}"
     echo ""
     echo -e "    ${BOLD}# Start Memgraph (if using Docker Desktop):${RESET}"
-    echo -e "    ${DIM}docker start helios-memgraph 2>/dev/null || true${RESET}"
+    echo -e "    ${DIM}docker start ${mg_name} 2>/dev/null || true${RESET}"
     echo ""
     echo -e "    ${BOLD}# Start Ollama:${RESET}"
     echo -e "    ${DIM}ollama serve &${RESET}"
@@ -2189,15 +2165,17 @@ PLIST_EOF
       ask "Add Helios service auto-start to ~/.bashrc? [y/N]:"
       read -t 120 -r add_autostart || add_autostart=""
       if [[ "$add_autostart" =~ ^[Yy]$ ]]; then
-        cat >> "$HOME/.bashrc" << 'WSLSTART'
+        # Unquoted heredoc: $mg_name expands at write time (correct — we embed
+        # the resolved name so the .bashrc reflects the actual container name).
+        cat >> "$HOME/.bashrc" << WSLSTART
 
 # Helios WSL auto-start
 # Start Docker containers and Ollama on WSL session launch
 # Start Memgraph if Docker is ready
 if docker info &>/dev/null 2>&1; then
-  (docker start helios-memgraph 2>/dev/null &)
+  (docker start ${mg_name} 2>/dev/null &)
 else
-  echo "[helios] Docker not ready — start Docker Desktop, then: docker start helios-memgraph"
+  echo "[helios] Docker not ready — start Docker Desktop, then: docker start ${mg_name}"
 fi
 # Start Ollama if not already running
 if ! pgrep -x ollama >/dev/null 2>&1; then
@@ -2289,7 +2267,8 @@ main() {
     run_step "Helios CLI"            install_pi
     run_step "Helios Agent"      setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
     run_step "Helios CLI"        install_helios_cli
-    run_step "Provider Selection" select_provider
+    # Interactive — must not go through run_step (captures stdout, breaks read prompts)
+    select_provider
   fi
 
   # Ensure Pi is available before running packages (may have been uninstalled)

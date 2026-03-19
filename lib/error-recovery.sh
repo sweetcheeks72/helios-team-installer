@@ -32,7 +32,8 @@ RESET="${RESET:-}"
 # 1. STEP TRACKING
 # =============================================================================
 
-TOTAL_STEPS=14
+# TOTAL_STEPS should be set by the calling script before run_step calls
+TOTAL_STEPS=${TOTAL_STEPS:-0}
 CURRENT_STEP=0
 
 # step_start <step_name>
@@ -57,9 +58,10 @@ step_done() {
 # Prints ✗ FAILED on the same line, then runs diagnostics / troubleshooter.
 step_fail() {
   local error_msg="${1:-unknown error}"
+  local exit_code="${2:-1}"
   printf " ${RED}✗ FAILED${RESET}\n"
   echo -e "  ${RED}Error:${RESET} ${error_msg}" >&2
-  generate_diagnostic_dump "${_CURRENT_STEP_NAME:-unknown}" "$?"
+  generate_diagnostic_dump "${_CURRENT_STEP_NAME:-unknown}" "$exit_code"
   offer_troubleshoot "$error_msg" "${_CURRENT_STEP_NAME:-unknown}"
 }
 
@@ -75,12 +77,12 @@ retry_with_backoff() {
   local max_retries="$1"
   local description="$2"
   shift 2
-  local cmd=("$@")
-
   # Backoff delays (indexed from 0 = first retry)
   local backoff_delays="2 5 10 20"
   local attempt=0
   local exit_code=0
+  local delay=20
+  local i=0
 
   while true; do
     "$@" ; exit_code=$?
@@ -94,8 +96,10 @@ retry_with_backoff() {
     fi
 
     # Pick delay: use the nth value if available, else last value (20)
-    local delay=20
-    local i=0
+    delay=20
+    i=0
+    # Intentional unquoted: space-delimited string iterated as words (Bash 3.2 compat)
+    # shellcheck disable=SC2086
     for d in $backoff_delays; do
       if [ "$i" -eq "$(( attempt - 1 ))" ]; then
         delay="$d"
@@ -354,6 +358,8 @@ offer_troubleshoot() {
     case "${answer:-Y}" in
       [Yy]* | "")
         echo -e "  ${CYAN}Applying fix...${RESET}"
+        # SAFE: $fix is only from static _KNOWN_FIX_CMDS — no user input
+        # shellcheck disable=SC2091
         if eval "$fix"; then
           echo -e "  ${GREEN}Fix applied successfully.${RESET}"
           return 0
@@ -381,20 +387,36 @@ offer_troubleshoot() {
 CHECKPOINT_FILE="${CHECKPOINT_FILE:-$HOME/.pi/agent/.install-checkpoint}"
 
 # save_checkpoint
-# Persists CURRENT_STEP to the checkpoint file.
+# Persists CURRENT_STEP (and metadata) to the checkpoint file as JSON.
 save_checkpoint() {
   mkdir -p "$(dirname "$CHECKPOINT_FILE")" 2>/dev/null || true
-  echo "$CURRENT_STEP" > "$CHECKPOINT_FILE"
+  cat > "$CHECKPOINT_FILE" << EOF
+{"step":$CURRENT_STEP,"stepName":"${_CURRENT_STEP_NAME:-unknown}","installerVersion":"${INSTALLER_VERSION:-unknown}"}
+EOF
 }
 
 # load_checkpoint
-# Echoes the last completed step number, or 0 if none.
+# Echoes the last completed step number, or 0 if none / version mismatch.
 load_checkpoint() {
-  if [ -f "$CHECKPOINT_FILE" ]; then
-    cat "$CHECKPOINT_FILE"
-  else
+  if [[ ! -f "$CHECKPOINT_FILE" ]]; then
     echo 0
+    return
   fi
+  local content
+  content="$(cat "$CHECKPOINT_FILE")"
+  # Handle legacy bare-integer format
+  if [[ "$content" =~ ^[0-9]+$ ]]; then
+    echo "$content"
+    return
+  fi
+  # Validate installer version matches
+  local saved_version
+  saved_version=$(echo "$content" | grep -o '"installerVersion":"[^"]*"' | cut -d'"' -f4)
+  if [[ "$saved_version" != "${INSTALLER_VERSION:-unknown}" ]]; then
+    echo 0  # Version mismatch — start fresh
+    return
+  fi
+  echo "$content" | grep -o '"step":[0-9]*' | grep -o '[0-9]*'
 }
 
 # clear_checkpoint
@@ -449,18 +471,21 @@ run_step() {
 
   # ── Run command ─────────────────────────────────────────────────────
   local exit_code=0
+  export _INSIDE_RUN_STEP=true
   if "${cmd[@]}" >"$tmp_output" 2>&1; then
+    _INSIDE_RUN_STEP=false
     step_done
     save_checkpoint
     rm -f "$tmp_output"
     return 0
   else
     exit_code=$?
+    _INSIDE_RUN_STEP=false
     local captured_output
     captured_output="$(cat "$tmp_output" 2>/dev/null)"
     rm -f "$tmp_output"
 
-    step_fail "$captured_output"
+    step_fail "$captured_output" "$exit_code"
 
     # ── Troubleshoot and optionally retry once ──────────────────────
     if offer_troubleshoot "$captured_output" "$step_name"; then

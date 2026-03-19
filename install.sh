@@ -11,10 +11,25 @@ set -euo pipefail
 INSTALL_WARNINGS=()
 
 # ─── Source error recovery library ────────────────────────────────────────────
-INSTALLER_DIR_EARLY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$INSTALLER_DIR_EARLY/lib/error-recovery.sh" ]]; then
+INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$INSTALLER_DIR/lib/error-recovery.sh" ]]; then
   # shellcheck source=lib/error-recovery.sh
-  source "$INSTALLER_DIR_EARLY/lib/error-recovery.sh"
+  source "$INSTALLER_DIR/lib/error-recovery.sh"
+fi
+
+# ─── Source platform detection library ────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR/lib/platform.sh" ]]; then
+  source "$INSTALLER_DIR/lib/platform.sh"
+fi
+
+# ─── Source preserve-files library ────────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR/lib/preserve-files.sh" ]]; then
+  source "$INSTALLER_DIR/lib/preserve-files.sh"
+fi
+
+# ─── Source containers library ────────────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR/lib/containers.sh" ]]; then
+  source "$INSTALLER_DIR/lib/containers.sh"
 fi
 
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
@@ -70,21 +85,25 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ─── Platform Detection ───────────────────────────────────────────────────────
-is_wsl() {
-  [[ -f /proc/version ]] && grep -qi "microsoft\|wsl" /proc/version 2>/dev/null
-}
+# is_wsl and current_platform are provided by lib/platform.sh (sourced above).
+# These fallback definitions are only used if the lib failed to load.
+if ! declare -f is_wsl &>/dev/null; then
+  is_wsl() {
+    [[ -f /proc/version ]] && grep -qiE "microsoft|wsl" /proc/version 2>/dev/null
+  }
 
-current_platform() {
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    echo "macos"
-  elif is_wsl; then
-    echo "wsl"
-  elif [[ "$(uname -s)" == "Linux" ]]; then
-    echo "linux"
-  else
-    echo "unknown"
-  fi
-}
+  current_platform() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      echo "macos"
+    elif is_wsl; then
+      echo "wsl"
+    elif [[ "$(uname -s)" == "Linux" ]]; then
+      echo "linux"
+    else
+      echo "unknown"
+    fi
+  }
+fi
 
 # ─── Colors & Styles ─────────────────────────────────────────────────────────
 # Respect NO_COLOR (https://no-color.org/) and dumb terminals
@@ -107,10 +126,14 @@ info()    { echo -e "${BLUE}  ℹ ${RESET}$*"; }
 success() { echo -e "${GREEN}  ✓ ${RESET}$*"; }
 warn()    { echo -e "${YELLOW}  ⚠ ${RESET}$*"; }
 error()   { echo -e "${RED}  ✗ ${RESET}$*"; }
-step()    { echo -e "\n${BOLD}${CYAN}▶ $*${RESET}"; }
+step()    {
+  # Skip if already inside run_step (step_start handles the header)
+  [[ "${_INSIDE_RUN_STEP:-}" == "true" ]] && return 0
+  echo -e "\n${BOLD}${CYAN}▶ $*${RESET}"
+}
 ask()     { echo -en "${MAGENTA}  ? ${RESET}$* "; }
+_count()  { wc -l | tr -d ' '; }
 
-INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HELIOS_RELEASE_URL="https://github.com/sweetcheeks72/helios-team-installer/releases/latest/download"
 HELIOS_AGENT_TARBALL="helios-agent-latest.tar.gz"
 FAMILIAR_REPO="github.com/sweetcheeks72/familiar"
@@ -210,13 +233,32 @@ run_with_spinner() {
   fi
 }
 
+# Verify SHA256 checksum of a file against a checksum file.
+# Returns 0 on match (or no sha256 tool available), 1 on mismatch.
+_verify_sha256() {
+  local file="$1" checksum_file="$2"
+  local expected actual
+  expected="$(awk '{print $1}' "$checksum_file")"
+  if command -v sha256sum &>/dev/null; then
+    actual="$(sha256sum "$file" | awk '{print $1}')"
+  elif command -v shasum &>/dev/null; then
+    actual="$(shasum -a 256 "$file" | awk '{print $1}')"
+  else
+    warn "No sha256 tool found — skipping checksum verification"
+    return 0
+  fi
+  if [[ -n "$actual" ]] && [[ "$actual" != "$expected" ]]; then
+    warn "SHA256 mismatch (expected ${expected:0:12}..., got ${actual:0:12}...)"
+    return 1
+  fi
+  return 0
+}
+
 check_prerequisites() {
   step "Prerequisites (auto-installing missing dependencies)"
 
   local platform
   platform="$(current_platform)"
-  local arch
-  arch="$(uname -m)"
 
   # ── Homebrew (macOS only) ──────────────────────────────────────────────────
   if [[ "$platform" == "macos" ]] && ! command -v brew &>/dev/null; then
@@ -242,23 +284,27 @@ check_prerequisites() {
   fi
 
   # ── Helper: install a dependency ───────────────────────────────────────────
-  _install_dep() {
-    local cmd="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}"
-    if command -v "$cmd" &>/dev/null; then
-      return 0
-    fi
-    info "Installing $cmd..."
-    case "$platform" in
-      macos)
-        brew install "$brew_pkg" >> "$LOG_FILE" 2>&1 ;;
-      linux|wsl)
-        sudo apt-get install -y "$apt_pkg" >> "$LOG_FILE" 2>&1 ;;
-      *)
-        warn "$cmd: unsupported platform ($platform) — install manually"
-        return 1 ;;
-    esac
-    command -v "$cmd" &>/dev/null
-  }
+  # _install_dep is provided by lib/platform.sh (sourced at top of script).
+  # Fallback inline definition used only when the lib failed to load.
+  if ! declare -f _install_dep &>/dev/null; then
+    _install_dep() {
+      local cmd="$1" brew_pkg="${2:-$1}" apt_pkg="${3:-$1}"
+      if command -v "$cmd" &>/dev/null; then
+        return 0
+      fi
+      info "Installing $cmd..."
+      case "$platform" in
+        macos)
+          brew install "$brew_pkg" >> "$LOG_FILE" 2>&1 ;;
+        linux|wsl)
+          sudo apt-get install -y "$apt_pkg" >> "$LOG_FILE" 2>&1 ;;
+        *)
+          warn "$cmd: unsupported platform ($platform) — install manually"
+          return 1 ;;
+      esac
+      command -v "$cmd" &>/dev/null
+    }
+  fi
 
   # ── Node.js 18+ ────────────────────────────────────────────────────────────
   local node_ok=false
@@ -273,20 +319,9 @@ check_prerequisites() {
 
   if [[ "$node_ok" == false ]]; then
     info "Installing Node.js..."
-    case "$platform" in
-      macos)
-        brew install node >> "$LOG_FILE" 2>&1 ;;
-      linux|wsl)
-        # NodeSource for Node 22 LTS (Ubuntu/Debian)
-        if command -v curl &>/dev/null; then
-          curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null | sudo bash - >> "$LOG_FILE" 2>&1
-          sudo apt-get install -y nodejs >> "$LOG_FILE" 2>&1
-        else
-          sudo apt-get update -y >> "$LOG_FILE" 2>&1
-          sudo apt-get install -y nodejs npm >> "$LOG_FILE" 2>&1
-        fi
-        ;;
-    esac
+    # Delegates to lib/platform.sh's _install_nodejs() which handles
+    # apt/dnf/pacman/zypper on Linux/WSL and brew on macOS.
+    _install_nodejs
     if command -v node &>/dev/null && node -e "process.exit(parseInt(process.version.slice(1)) < 18 ? 1 : 0)" 2>/dev/null; then
       success "Node.js $(node -v) installed"
     else
@@ -405,7 +440,7 @@ check_prerequisites() {
 
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
-  step "Helios CLI"
+  step "Pi CLI (npm package)"
 
   if command -v pi &>/dev/null; then
     local pi_ver
@@ -496,15 +531,10 @@ setup_helios_agent() {
     cp -a "$PI_AGENT_DIR" "$backup_dir"
     info "Backed up current agent to $backup_dir"
 
-    # Stash user files before extraction
-    # PRESERVE_FILES — MUST MATCH auto-update.ts PRESERVE_FILES list
+    # Stash user files before extraction (delegates to lib/preserve-files.sh)
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
-    done
+    stash_preserve_files "$PI_AGENT_DIR" "$tmp_stash"
 
     # Download and extract new tarball
     local tmp_tarball
@@ -519,18 +549,8 @@ setup_helios_agent() {
     local tmp_checksum
     tmp_checksum="$(mktemp)"
     if _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
-      local expected_sha actual_sha
-      expected_sha="$(awk '{print $1}' "$tmp_checksum")"
-      if command -v sha256sum &>/dev/null; then
-        actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
-      elif command -v shasum &>/dev/null; then
-        actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
-      else
-        warn "No sha256 tool found — skipping checksum verification"
-        actual_sha="$expected_sha"
-      fi
-      if [[ -n "$actual_sha" ]] && [[ "$actual_sha" != "$expected_sha" ]]; then
-        warn "SHA256 mismatch — aborting update"
+      if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
+        warn "Tarball checksum mismatch — skipping extraction"
         rm -rf "$tmp_stash" "$tmp_tarball" "$tmp_checksum"
         cp -a "$backup_dir" "$PI_AGENT_DIR"
         return 0
@@ -549,12 +569,8 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_tarball"
 
-    # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-    done
+    # Restore user files (delegates to lib/preserve-files.sh)
+    restore_preserve_files "$tmp_stash" "$PI_AGENT_DIR"
     rm -rf "$tmp_stash"
 
     success "Helios agent updated to $remote_version"
@@ -571,14 +587,10 @@ setup_helios_agent() {
   if [[ -d "$PI_AGENT_DIR/.git" ]]; then
     info "Detected git-based install — migrating to tarball distribution…"
 
-    # Stash user files
+    # Stash user files (delegates to lib/preserve-files.sh)
     local tmp_stash
     tmp_stash="$(mktemp -d)"
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
-    done
+    stash_preserve_files "$PI_AGENT_DIR" "$tmp_stash"
 
     # Backup the full git install
     local backup_dir="${PI_AGENT_DIR}.git-backup.$(date +%Y%m%d_%H%M%S)"
@@ -598,18 +610,8 @@ setup_helios_agent() {
     local tmp_checksum
     tmp_checksum="$(mktemp)"
     if _helios_download "$HELIOS_RELEASE_URL/helios-agent-latest.tar.gz.sha256" "$tmp_checksum"; then
-      local expected_sha actual_sha
-      expected_sha="$(awk '{print $1}' "$tmp_checksum")"
-      if command -v sha256sum &>/dev/null; then
-        actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
-      elif command -v shasum &>/dev/null; then
-        actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
-      else
-        warn "No sha256 tool found — skipping checksum verification"
-        actual_sha="$expected_sha"
-      fi
-      if [[ -n "$actual_sha" ]] && [[ "$actual_sha" != "$expected_sha" ]]; then
-        warn "SHA256 mismatch — aborting migration"
+      if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
+        warn "Tarball checksum mismatch — skipping extraction"
         rm -rf "$tmp_stash" "$tmp_tarball" "$tmp_checksum"
         return 0
       fi
@@ -628,12 +630,8 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_tarball"
 
-    # Restore user files
-    for preserve in .env settings.json governance sessions .helios auth.json run-history.jsonl \
-                    mcp.json dep-allowlist.json .secrets state models.json pi-messenger.json \
-                    .update-state.json VERSION; do
-      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-    done
+    # Restore user files (delegates to lib/preserve-files.sh)
+    restore_preserve_files "$tmp_stash" "$PI_AGENT_DIR"
     rm -rf "$tmp_stash"
 
     success "Migrated from git to tarball distribution ($(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo 'unknown'))"
@@ -656,7 +654,7 @@ setup_helios_agent() {
 
   # Check disk space before downloading
   local free_mb
-  free_mb=$(df -m "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+  free_mb=$(df -Pm "$HOME" 2>/dev/null | awk 'NR>1 {print $4; exit}')
   if [[ -n "$free_mb" ]] && [[ "$free_mb" -lt 500 ]]; then
     error "Insufficient disk space (${free_mb}MB free, need at least 500MB)"
     return 1
@@ -679,19 +677,8 @@ setup_helios_agent() {
   fi
 
   # Verify SHA256
-  local expected_sha actual_sha
-  expected_sha="$(awk '{print $1}' "$tmp_checksum")"
-  if command -v sha256sum &>/dev/null; then
-    actual_sha="$(sha256sum "$tmp_tarball" | awk '{print $1}')"
-  elif command -v shasum &>/dev/null; then
-    actual_sha="$(shasum -a 256 "$tmp_tarball" | awk '{print $1}')"
-  else
-    warn "No sha256 tool found — skipping checksum verification"
-    actual_sha="$expected_sha"
-  fi
-
-  if [[ "$actual_sha" != "$expected_sha" ]]; then
-    warn "SHA256 mismatch (expected $expected_sha, got $actual_sha) — aborting install"
+  if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
+    warn "Tarball checksum mismatch — skipping extraction"
     rm -f "$tmp_tarball" "$tmp_checksum"
     return 1
   fi
@@ -716,7 +703,7 @@ setup_helios_agent() {
 
 # ─── Helios CLI Command ──────────────────────────────────────────────────────
 install_helios_cli() {
-  step "Helios CLI"
+  step "Helios CLI (symlink)"
 
   local helios_bin="$PI_AGENT_DIR/bin/helios"
   if [[ ! -f "$helios_bin" ]]; then
@@ -725,35 +712,45 @@ install_helios_cli() {
   fi
 
   chmod +x "$helios_bin"
-  local installed=false
+  local system_install=false
 
   # Try /usr/local/bin first
   if [[ -w /usr/local/bin ]]; then
     ln -sfn "$helios_bin" /usr/local/bin/helios
     success "helios → /usr/local/bin/helios"
-    installed=true
+    system_install=true
   elif sudo -n true 2>/dev/null; then
     sudo ln -sfn "$helios_bin" /usr/local/bin/helios
     success "helios → /usr/local/bin/helios"
-    installed=true
+    system_install=true
   fi
 
   # Also install to ~/.local/bin
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
-  if [[ "$installed" == false ]]; then
+  if [[ "$system_install" == false ]]; then
     success "helios → ~/.local/bin/helios"
   fi
 
   # Add to PATH in shell profile if not already there
-  local shell_rc="$HOME/.zshrc"
-  [[ -f "$HOME/.bashrc" ]] && [[ ! -f "$HOME/.zshrc" ]] && shell_rc="$HOME/.bashrc"
+  local shell_rc
+  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
+    shell_rc="$HOME/.zshrc"
+  elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == */bash ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      shell_rc="$HOME/.bash_profile"
+    else
+      shell_rc="$HOME/.bashrc"
+    fi
+  else
+    shell_rc="$HOME/.zshrc"
+  fi
   if ! grep -q '\.local/bin' "$shell_rc" 2>/dev/null; then
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
     success "Added ~/.local/bin to PATH in $(basename "$shell_rc")"
   fi
   export PATH="$HOME/.local/bin:$PATH"
-  info "Restart your terminal or run: source ~/.zshrc"
+  info "Restart your terminal or run: source $(basename "$shell_rc")"
 
 
   # Also symlink fd if present and not already in PATH
@@ -779,7 +776,7 @@ install_packages() {
   # Check if packages were bundled in the tarball
   local bundled_count=0
   if [[ -d "$PI_AGENT_DIR/git/github.com/sweetcheeks72" ]]; then
-    bundled_count=$(find "$PI_AGENT_DIR/git/github.com/sweetcheeks72" -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+    bundled_count=$(find "$PI_AGENT_DIR/git/github.com/sweetcheeks72" -maxdepth 1 -type d 2>/dev/null | _count)
     ((bundled_count--)) || true  # subtract the parent dir itself
   fi
 
@@ -804,13 +801,15 @@ install_packages() {
     # That's the wrapper, not the CLI. Try the pi binary name from our fork.
     cli_bin="$(npm prefix -g 2>/dev/null)/bin/pi" 2>/dev/null
   fi
-  # Final fallback: npx
-  if [[ ! -x "$cli_bin" ]]; then
-    cli_bin="npx @mariozechner/pi-coding-agent"
+  # Build CLI command array to avoid word-splitting on fallback path
+  local -a cli_cmd
+  if [[ -x "$cli_bin" ]]; then
+    cli_cmd=("$cli_bin")
+  else
+    cli_cmd=(npx @mariozechner/pi-coding-agent)
   fi
-  
-  run_with_spinner "Running package sync" \
-    $cli_bin update || {
+
+  run_with_spinner "Running package sync" "${cli_cmd[@]}" update || {
     if [[ "$bundled_count" -ge 15 ]]; then
       warn "helios update had issues, but bundled packages are available"
     else
@@ -1148,24 +1147,8 @@ persist_runtime_contract() {
 
   # Step 2 — use caller-resolved container if provided
   if [[ -z "$resolved_container" ]]; then
-    # Priority: exact 'memgraph' → compose-label → legacy 'familiar-graph-1'
-    local _ps_names
-    _ps_names=$(docker ps --format '{{.Names}}' 2>/dev/null || true)
-    for _mgn in memgraph familiar-graph-1; do
-      if echo "$_ps_names" | grep -q "^${_mgn}$" 2>/dev/null; then
-        resolved_container="$_mgn"
-        break
-      fi
-    done
-    # Compose-label discovery if still unresolved
-    if [[ -z "$resolved_container" ]]; then
-      local _compose_name
-      _compose_name=$(docker ps --format '{{.Names}}\t{{.Labels}}' 2>/dev/null \
-        | grep -i 'com.docker.compose.service=memgraph' | head -1 | awk '{print $1}' || true)
-      [[ -n "$_compose_name" ]] && resolved_container="$_compose_name"
-    fi
-    # Default to nominal 'memgraph' if nothing is running
-    [[ -z "$resolved_container" ]] && resolved_container="memgraph"
+    # Resolve container via shared lib (containers.sh); fallback to 'memgraph'
+    resolved_container=$(resolve_memgraph_container) || resolved_container="memgraph"
   fi
 
   mkdir -p "$runtime_dir"
@@ -1220,15 +1203,13 @@ setup_memgraph() {
     return 0
   fi
 
-  # Check if a Memgraph container already exists
-  # Priority: exact 'memgraph' → legacy 'familiar-graph-1'
+  # Check if a Memgraph container already exists (running or stopped)
   local mg_container=""
-  for name in memgraph familiar-graph-1; do
-    if docker ps -a --format '{{.Names}}' | grep -q "^${name}$" 2>/dev/null; then
-      mg_container="$name"
-      break
-    fi
-  done
+  # resolve_memgraph_container returns 0 when a real container is found,
+  # 1 when it falls back to the default 'memgraph' name (no container present).
+  if ! mg_container=$(resolve_memgraph_container); then
+    mg_container=""  # No real container found — proceed to fresh install path
+  fi
 
   if [[ -n "$mg_container" ]]; then
     # Already exists — make sure it's running
@@ -1274,13 +1255,9 @@ setup_memgraph() {
     fi
   fi
 
-  # Apply graph schema — resolve running container (memgraph first, then legacy fallback)
+  # Apply graph schema — resolve running container via shared lib
   local mg_running=""
-  for _mn in memgraph familiar-graph-1; do
-    if docker ps --format '{{.Names}}' | grep -q "^${_mn}$" 2>/dev/null; then
-      mg_running="$_mn"; break
-    fi
-  done
+  mg_running=$(resolve_memgraph_container) || mg_running=""
   local schema="$PI_AGENT_DIR/skills/skill-graph/scripts/schema.cypher"
   if [[ -n "$mg_running" ]] && [[ -f "$schema" ]]; then
     docker exec -i "$mg_running" mgconsole --username memgraph --password memgraph \
@@ -1307,7 +1284,8 @@ setup_ollama() {
   # Ensure Ollama is running
   if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
     info "Starting Ollama..."
-    if pgrep -x ollama &>/dev/null || launchctl list 2>/dev/null | grep -q com.ollama; then
+    if pgrep -x ollama &>/dev/null \
+       || { [[ "$(uname -s)" == "Darwin" ]] && launchctl list 2>/dev/null | grep -q com.ollama; }; then
       success "Ollama already running (managed by system)"
     else
       nohup ollama serve >> "$LOG_FILE" 2>&1 &
@@ -1365,7 +1343,19 @@ setup_mcp_servers() {
   # Warm up mcp-memgraph binary
   if command -v uvx &>/dev/null; then
     info "Caching mcp-memgraph server..."
-    timeout 30 uvx --from mcp-memgraph mcp-memgraph --help >> "$LOG_FILE" 2>&1 || true
+    if command -v timeout &>/dev/null; then
+      timeout 30 uvx --from mcp-memgraph mcp-memgraph --help >> "$LOG_FILE" 2>&1 || true
+    elif command -v gtimeout &>/dev/null; then
+      gtimeout 30 uvx --from mcp-memgraph mcp-memgraph --help >> "$LOG_FILE" 2>&1 || true
+    else
+      # macOS without coreutils: run with background kill
+      uvx --from mcp-memgraph mcp-memgraph --help >> "$LOG_FILE" 2>&1 &
+      local _uvx_pid=$!
+      ( sleep 30 && kill "$_uvx_pid" 2>/dev/null ) &
+      local _kill_pid=$!
+      wait "$_uvx_pid" 2>/dev/null || true
+      kill "$_kill_pid" 2>/dev/null || true
+    fi
     success "mcp-memgraph (Bolt → MCP bridge)"
   fi
 
@@ -1433,7 +1423,8 @@ if os.path.exists(target):
             existing = json.load(f)
         existing.setdefault('mcpServers', {}).update(servers)
         mcp = existing
-    except: pass
+    except (json.JSONDecodeError, OSError):
+        pass  # corrupted or missing file — start fresh
 with open(target, 'w') as f:
     json.dump(mcp, f, indent=2)
     f.write('\n')
@@ -1537,7 +1528,11 @@ wire_env_to_shell() {
   if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
     shell_profile="$HOME/.zshrc"
   elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == */bash ]]; then
-    shell_profile="$HOME/.bashrc"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      shell_profile="$HOME/.bash_profile"
+    else
+      shell_profile="$HOME/.bashrc"
+    fi
   else
     shell_profile="$HOME/.profile"
   fi
@@ -1726,7 +1721,7 @@ run_verification() {
   # Count agents
   local agent_count=0
   if [[ -d "$PI_AGENT_DIR/agents" ]]; then
-    agent_count=$(find "$PI_AGENT_DIR/agents" -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+    agent_count=$(find "$PI_AGENT_DIR/agents" -name "*.md" 2>/dev/null | _count)
     if [[ "$agent_count" -ge 48 ]]; then
       success "Agents: $agent_count (expect 48+)"
     else
@@ -1739,7 +1734,7 @@ run_verification() {
   skill_count=$(
     (find "$PI_AGENT_DIR/skills" -name "SKILL.md" 2>/dev/null
      find "$FAMILIAR_DIR/skills" -name "SKILL.md" 2>/dev/null
-     true) | wc -l | tr -d ' '
+     true) | _count
   )
   if [[ "$skill_count" -ge 16 ]]; then
     success "Skills: $skill_count (expect 16+)"
@@ -1750,7 +1745,7 @@ run_verification() {
   # Count extensions
   local ext_count=0
   if [[ -d "$PI_AGENT_DIR/extensions" ]]; then
-    ext_count=$(find "$PI_AGENT_DIR/extensions" -name "*.js" -o -name "index.ts" 2>/dev/null | wc -l | tr -d ' ')
+    ext_count=$(find "$PI_AGENT_DIR/extensions" -name "*.js" -o -name "index.ts" 2>/dev/null | _count)
     success "Extensions: found in ~/.pi/agent/extensions/"
   fi
 
@@ -1758,7 +1753,7 @@ run_verification() {
   local env_file="$PI_AGENT_DIR/.env"
   if [[ -f "$env_file" ]]; then
     local keys_set
-    keys_set=$(grep -v '^#' "$env_file" 2>/dev/null | grep -v '^$' | grep -v '=$' | wc -l | tr -d ' ') || keys_set=0
+    keys_set=$(grep -v '^#' "$env_file" 2>/dev/null | grep -v '^$' | grep -v '=$' | _count) || keys_set=0
     if [[ "$keys_set" -gt 0 ]]; then
       success ".env: $keys_set key(s) configured"
     else
@@ -1967,7 +1962,8 @@ if os.path.exists(sf):
     try:
         with open(sf) as f:
             existing = json.load(f)
-    except: pass
+    except (json.JSONDecodeError, OSError):
+        pass  # corrupted or missing — start fresh
 record = {
     'state': 'queued',
     'targetPath': target,
@@ -2013,21 +2009,6 @@ print('queued: ' + target)
   fi
 }
 
-# ─── Deduplicate Extensions ───────────────────────────────────────────────────
-deduplicate_extensions() {
-  step "Deduplicating Extensions"
-  local dominated_exts=("pi-review-loop")
-  for ext in "${dominated_exts[@]}"; do
-    local local_ext="$PI_AGENT_DIR/extensions/$ext"
-    local git_ext="$PI_AGENT_DIR/git/github.com/sweetcheeks72/$ext"
-    if [[ -d "$local_ext" ]] && [[ -d "$git_ext" ]]; then
-      info "Removing duplicate: $local_ext (git package $git_ext takes precedence)"
-      rm -rf "$local_ext"
-      success "Removed duplicate local extension: $ext (git package takes precedence)"
-    fi
-  done
-}
-
 # ─── Optional System Dependencies ─────────────────────────────────────────────
 install_optional_deps() {
   step "Optional Dependencies"
@@ -2041,6 +2022,10 @@ install_optional_deps() {
       brew install ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually — brew install ffmpeg"
     elif command -v apt-get &>/dev/null; then
       sudo apt-get install -y ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually"
+    elif command -v dnf &>/dev/null; then
+      sudo dnf install -y ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually — sudo dnf install ffmpeg"
+    elif command -v pacman &>/dev/null; then
+      sudo pacman -S --noconfirm ffmpeg >> "$LOG_FILE" 2>&1 && success "ffmpeg installed" || warn "ffmpeg: install manually — sudo pacman -S ffmpeg"
     else
       warn "ffmpeg not found — install manually for video features"
     fi
@@ -2053,6 +2038,17 @@ install_optional_deps() {
     info "Installing yt-dlp (YouTube video/transcript)..."
     if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
       brew install yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || true
+    elif command -v apt-get &>/dev/null; then
+      sudo apt-get install -y yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || \
+        { command -v pip3 &>/dev/null && pip3 install --user yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed (pip3)"; } || \
+        warn "yt-dlp: install manually — pip3 install --user yt-dlp"
+    elif command -v dnf &>/dev/null; then
+      sudo dnf install -y yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || \
+        { command -v pip3 &>/dev/null && pip3 install --user yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed (pip3)"; } || \
+        warn "yt-dlp: install manually — pip3 install --user yt-dlp"
+    elif command -v pacman &>/dev/null; then
+      sudo pacman -S --noconfirm yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || \
+        warn "yt-dlp: install manually — sudo pacman -S yt-dlp"
     elif command -v pipx &>/dev/null; then
       pipx install yt-dlp >> "$LOG_FILE" 2>&1 && success "yt-dlp installed" || warn "yt-dlp: install manually"
     elif command -v pip3 &>/dev/null; then
@@ -2065,7 +2061,7 @@ install_optional_deps() {
   # Vector dimension migration (ensures Memgraph schema_version=2)
   local fix_script="$PI_AGENT_DIR/scripts/fix-vector-dimensions.sh"
   if [[ -f "$fix_script" ]] && command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    if docker ps --format '{{.Names}}' | grep -qE "^(memgraph|familiar-graph-1)$" 2>/dev/null; then
+    if is_memgraph_running 2>/dev/null; then
       bash "$fix_script" >> "$LOG_FILE" 2>&1 && info "Vector dimensions verified" || true
     fi
   fi
@@ -2170,12 +2166,15 @@ PLIST_EOF
   elif is_wsl; then
     # WSL: no systemd by default, no persistent cron. Use Windows Task Scheduler hints.
     info "WSL detected — background services work differently here"
+    # Resolve the actual container name once (C4: was hardcoded as helios-memgraph)
+    local mg_name
+    mg_name=$(resolve_memgraph_container) || mg_name="memgraph"
     echo ""
     echo -e "  ${DIM}WSL doesn't auto-start background services like macOS/Linux.${RESET}"
     echo -e "  ${DIM}You'll need to start services manually each session:${RESET}"
     echo ""
     echo -e "    ${BOLD}# Start Memgraph (if using Docker Desktop):${RESET}"
-    echo -e "    ${DIM}docker start helios-memgraph 2>/dev/null || true${RESET}"
+    echo -e "    ${DIM}docker start ${mg_name} 2>/dev/null || true${RESET}"
     echo ""
     echo -e "    ${BOLD}# Start Ollama:${RESET}"
     echo -e "    ${DIM}ollama serve &${RESET}"
@@ -2189,15 +2188,17 @@ PLIST_EOF
       ask "Add Helios service auto-start to ~/.bashrc? [y/N]:"
       read -t 120 -r add_autostart || add_autostart=""
       if [[ "$add_autostart" =~ ^[Yy]$ ]]; then
-        cat >> "$HOME/.bashrc" << 'WSLSTART'
+        # Unquoted heredoc: $mg_name expands at write time (correct — we embed
+        # the resolved name so the .bashrc reflects the actual container name).
+        cat >> "$HOME/.bashrc" << WSLSTART
 
 # Helios WSL auto-start
 # Start Docker containers and Ollama on WSL session launch
 # Start Memgraph if Docker is ready
 if docker info &>/dev/null 2>&1; then
-  (docker start helios-memgraph 2>/dev/null &)
+  (docker start ${mg_name} 2>/dev/null &)
 else
-  echo "[helios] Docker not ready — start Docker Desktop, then: docker start helios-memgraph"
+  echo "[helios] Docker not ready — start Docker Desktop, then: docker start ${mg_name}"
 fi
 # Start Ollama if not already running
 if ! pgrep -x ollama >/dev/null 2>&1; then
@@ -2210,7 +2211,12 @@ WSLSTART
 
   elif [[ "$(uname -s)" == "Linux" ]]; then
     # Docker restart policy (already in compose, but ensure)
-    docker update --restart=unless-stopped memgraph 2>/dev/null && success "Memgraph restart policy" || true
+    local mg_boot_name
+    mg_boot_name=$(resolve_memgraph_container) || mg_boot_name="memgraph"
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE "^${mg_boot_name}$"; then
+      docker update --restart=unless-stopped "$mg_boot_name" >> "${LOG_FILE:-/dev/null}" 2>&1 \
+        && success "Memgraph restart policy" || true
+    fi
 
     # Ollama systemd
     if command -v systemctl &>/dev/null; then
@@ -2227,26 +2233,6 @@ WSLSTART
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 main() {
-  for arg in "$@"; do
-    case "$arg" in
-      --help|-h)
-        echo "Usage: bash install.sh [options]"
-        echo ""
-        echo "Options:"
-        echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
-        echo "  --update   Run in update mode (skip interactive prompts)"
-        echo "  --help     Show this help message"
-        echo ""
-        echo "First install (team members):"
-        echo "  curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash"
-        echo ""
-        echo "Re-run / update:"
-        echo "  helios update"
-        exit 0
-        ;;
-    esac
-  done
-
   print_banner
   echo -e "  ${BOLD}Starting Helios installation...${RESET}"
   echo -e "  ${DIM}This will install Helios CLI, Helios agent, and supporting tools.${RESET}"
@@ -2254,9 +2240,13 @@ main() {
   echo ""
   detect_update_mode "$@"
 
-  # Adjust step counter for update mode (only 3 of 14 steps run)
+  # Set TOTAL_STEPS accurately for this run (error-recovery.sh defaults to 0)
+  # Full install: 13 run_step calls. Update mode: 3 run_step calls.
   if [[ "$UPDATE_MODE" == true ]]; then
     TOTAL_STEPS=3
+    CURRENT_STEP=0
+  else
+    TOTAL_STEPS=13
     CURRENT_STEP=0
   fi
 
@@ -2286,10 +2276,11 @@ main() {
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites
-    run_step "Helios CLI"            install_pi
-    run_step "Helios Agent"      setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
-    run_step "Helios CLI"        install_helios_cli
-    run_step "Provider Selection" select_provider
+    run_step "Pi CLI (npm)"  install_pi
+    run_step "Helios Agent"          setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
+    run_step "Helios CLI (symlink)"  install_helios_cli
+    # Interactive — must not go through run_step (captures stdout, breaks read prompts)
+    select_provider
   fi
 
   # Ensure Pi is available before running packages (may have been uninstalled)
@@ -2299,7 +2290,6 @@ main() {
   fi
 
   run_step "Pi Packages"       install_packages
-  deduplicate_extensions
   run_step "Skill Dependencies" install_skill_deps
   run_step "Governance Deps"    install_governance_deps
 
@@ -2312,11 +2302,15 @@ main() {
     run_step "Optional Deps"     install_optional_deps
     setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
     schedule_bootstrap    # Queue + launch codebase indexing in background
-    setup_api_keys        # Interactive: prompt for keys
-    wire_env_to_shell     # Add .env sourcing to shell profile
+
+    # Interactive — bypasses run_step to avoid stdout capture
+    setup_api_keys
+    wire_env_to_shell
+
     setup_familiar        # Interactive: optional Familiar install
   fi
 
+  # Non-interactive but light-weight — checkpoint not critical
   dedup_skills_extensions
   run_verification
   print_quickstart

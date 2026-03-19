@@ -4,7 +4,7 @@
 # =============================================================================
 # Usage: curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 # =============================================================================
-{
+
 # ─── Windows Detection ────────────────────────────────────────────────────────
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -32,7 +32,7 @@ if [[ ! -t 0 ]]; then
 fi
 
 # ─── Immediate output — user sees this first, before anything can hang ────────
-if [[ -t 1 ]] && [[ "${NO_COLOR:-}" != "1" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
   RED='\033[0;31m'
   GREEN='\033[0;32m'
   YELLOW='\033[1;33m'
@@ -45,9 +45,15 @@ else
 fi
 
 PLATFORM="$(uname -s)"
-ARCH="$(uname -m)"
 INSTALLER_DIR="$HOME/helios-team-installer"
 INSTALLER_REPO="https://github.com/sweetcheeks72/helios-team-installer.git"
+
+# Source shared platform detection lib (only available after installer is cloned)
+_source_platform_lib() {
+  if [[ -f "$INSTALLER_DIR/lib/platform.sh" ]]; then
+    source "$INSTALLER_DIR/lib/platform.sh"
+  fi
+}
 
 echo ""
 echo -e "${BOLD}${CYAN}"
@@ -82,7 +88,7 @@ if [[ "$PLATFORM" == "Darwin" ]]; then
     # Method 1: Non-interactive install via softwareupdate (preferred — no GUI popup)
     # Create the trigger file that makes softwareupdate list CLT
     touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress 2>/dev/null || true
-    CLT_PACKAGE=$(softwareupdate -l 2>/dev/null | grep -o ".*Command Line Tools.*" | grep -v "^\\*" | sed 's/^[[:space:]]*//' | sort -V | tail -1)
+    CLT_PACKAGE=$(softwareupdate -l 2>/dev/null | grep -o ".*Command Line Tools.*" | grep -v "^\\*" | sed 's/^[[:space:]]*//' | { command -v gsort &>/dev/null && gsort -V || sort; } | tail -1)
 
     if [[ -n "$CLT_PACKAGE" ]]; then
       echo "     Found: $CLT_PACKAGE"
@@ -241,8 +247,17 @@ echo ""
 # ─── Clone or update installer ───────────────────────────────────────────────
 if [ -d "$INSTALLER_DIR/.git" ]; then
   echo -e "  ${CYAN}ℹ${RESET} Installer already exists — pulling latest..."
-  if ! git -C "$INSTALLER_DIR" pull --rebase --autostash -q 2>/dev/null; then
-    echo -e "  ${YELLOW}⚠${RESET} Could not pull latest — using existing version"
+  # Abort any in-progress rebase from a previous failed run
+  if [ -d "$INSTALLER_DIR/.git/rebase-merge" ] || [ -d "$INSTALLER_DIR/.git/rebase-apply" ]; then
+    git -C "$INSTALLER_DIR" rebase --abort 2>/dev/null || true
+  fi
+  if ! git -C "$INSTALLER_DIR" pull --ff-only -q 2>/dev/null; then
+    # Fast-forward failed (local diverged from upstream) — hard reset
+    echo -e "  ${YELLOW}⚠${RESET} Local installer modified — resetting to latest release..."
+    git -C "$INSTALLER_DIR" fetch origin main -q 2>/dev/null || true
+    git -C "$INSTALLER_DIR" reset --hard origin/main -q 2>/dev/null || {
+      echo -e "  ${YELLOW}⚠${RESET} Could not update — using existing version"
+    }
   fi
 else
   if [ -d "$INSTALLER_DIR" ]; then
@@ -253,7 +268,18 @@ else
   git clone -q "$INSTALLER_REPO" "$INSTALLER_DIR"
 fi
 
+# Sanity check: verify working tree is clean after pull
+if [ ! -f "$INSTALLER_DIR/install.sh" ]; then
+  echo -e "  ${YELLOW}⚠${RESET} Working tree corrupt — re-cloning..."
+  rm -rf "$INSTALLER_DIR"
+  git clone -q "$INSTALLER_REPO" "$INSTALLER_DIR"
+fi
+
 echo -e "  ${GREEN}✓${RESET} Installer ready at $INSTALLER_DIR"
+
+# Source shared platform lib now that the installer directory is available
+_source_platform_lib
+
 echo ""
 
 # ─── Hand off to full installer ──────────────────────────────────────────────
@@ -272,4 +298,3 @@ INSTALLER_COMMIT="$(git -C "$INSTALLER_DIR" rev-parse --short HEAD 2>/dev/null |
 echo -e "  ${DIM}Running install.sh from commit ${INSTALLER_COMMIT}${RESET}"
 
 exec bash "$INSTALLER_DIR/install.sh" "$@"
-}

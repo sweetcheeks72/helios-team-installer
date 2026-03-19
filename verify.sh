@@ -42,6 +42,12 @@ RESET='\033[0m'
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
 
+# ─── Source shared libraries ──────────────────────────────────────────────────
+VERIFY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$VERIFY_DIR/lib/containers.sh" ]]; then
+  source "$VERIFY_DIR/lib/containers.sh"
+fi
+
 PASS=0
 WARN=0
 FAIL=0
@@ -251,7 +257,7 @@ fi
 critical_pkgs=("pi-interview-tool" "visual-explainer" "pi-design-deck" "pi-subagents" "pi-web-access")
 missing_critical=()
 for pkg in "${critical_pkgs[@]}"; do
-  if [[ ! -d "$PI_AGENT_DIR/git/github.com/nicobailon/$pkg" ]]; then
+  if [[ ! -d "$PI_AGENT_DIR/git/github.com/sweetcheeks72/$pkg" ]]; then
     missing_critical+=("$pkg")
   fi
 done
@@ -336,14 +342,20 @@ fi
 section "8. Memgraph"
 
 mg_running=""
-# M5 fix: check both 'memgraph' (preferred) and legacy 'familiar-graph-1',
-# matching the resolution order in install.sh's setup_memgraph().
-for name in memgraph familiar-graph-1; do
-  if command -v docker &>/dev/null && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
-    mg_running="$name"
-    break
+# Use shared lib (containers.sh) for consistent container resolution.
+if command -v docker &>/dev/null; then
+  if declare -f is_memgraph_running &>/dev/null && is_memgraph_running 2>/dev/null; then
+    mg_running=$(resolve_memgraph_container)
+  else
+    # Fallback: lib not loaded or not running
+    for name in memgraph familiar-graph-1; do
+      if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${name}$"; then
+        mg_running="$name"
+        break
+      fi
+    done
   fi
-done
+fi
 
 if [[ -n "$mg_running" ]]; then
   check_pass "Memgraph container running ($mg_running)"

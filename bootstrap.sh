@@ -5,6 +5,8 @@
 # Usage: curl -fsSL https://raw.githubusercontent.com/sweetcheeks72/helios-team-installer/main/bootstrap.sh | bash
 # =============================================================================
 
+{
+
 # ─── Windows Detection ────────────────────────────────────────────────────────
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*)
@@ -299,3 +301,4 @@ echo -e "  ${DIM}Running install.sh from commit ${INSTALLER_COMMIT}${RESET}"
 
 exec bash "$INSTALLER_DIR/install.sh" "$@"
 "$INSTALLER_DIR/install.sh" "$@"
+}

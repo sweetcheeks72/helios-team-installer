@@ -475,7 +475,7 @@ run_step() {
   _kill_hb() {
     if [[ -n "$_hb_pid" ]]; then
       kill "$_hb_pid" 2>/dev/null
-      wait "$_hb_pid" 2>/dev/null
+      wait "$_hb_pid" 2>/dev/null || true
       printf '\n'
       _hb_pid=""
     fi

@@ -173,6 +173,19 @@ BANNER
   echo -e "  ${DIM}Log: $LOG_FILE${RESET}\n"
 }
 
+# ─── Timeout Wrapper (macOS lacks GNU timeout) ────────────────────────────────
+_timeout_cmd() {
+  if command -v timeout &>/dev/null; then
+    timeout "$@"
+  elif command -v gtimeout &>/dev/null; then
+    gtimeout "$@"
+  else
+    # No timeout available — run command without guard
+    shift  # discard the timeout duration argument
+    "$@"
+  fi
+}
+
 # ─── Progress Spinner ─────────────────────────────────────────────────────────
 spin_pid=""
 start_spinner() {
@@ -206,14 +219,15 @@ run_with_spinner() {
   tmp_err="$(mktemp)"
   # Run command: stdout to log file (not terminal — spinner is showing).
   # Stderr to temp file for error display on failure.
-  timeout ${STEP_TIMEOUT:-300} "$@" >> "$LOG_FILE" 2>"$tmp_err" </dev/null &
+  # NOTE: stdin is /dev/null — commands passed here must not read stdin
+  _timeout_cmd "${STEP_TIMEOUT:-300}" "$@" >> "$LOG_FILE" 2>"$tmp_err" </dev/null &
   local cmd_pid=$!
   # Use || cmd_exit=$? to prevent set -e from firing on failed wait, which would
   # skip stop_spinner and leave the terminal in a corrupt state.
   local cmd_exit=0
   wait $cmd_pid || cmd_exit=$?
   if [[ $cmd_exit -eq 124 ]]; then
-    echo "  ⚠ Timed out after ${STEP_TIMEOUT:-300}s" >> "$tmp_err"
+    echo "  ⚠ Timed out after ${STEP_TIMEOUT:-300}s" >> "$tmp_err" 2>/dev/null || true
   fi
   stop_spinner
   # Append stderr to log file regardless of outcome
@@ -461,7 +475,7 @@ install_pi() {
   
   # Pre-flight: fix npm cache permissions (common macOS issue when npm was run with sudo)
   if [[ -d "$HOME/.npm" ]]; then
-    if ! timeout 60 npm cache verify >> "$LOG_FILE" 2>&1; then
+    if ! _timeout_cmd 60 npm cache verify >> "$LOG_FILE" 2>&1; then
       warn "npm cache issue detected — repairing..."
       chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
       npm cache clean --force >> "$LOG_FILE" 2>&1 || true
@@ -472,8 +486,8 @@ install_pi() {
   if [[ "$(uname -s)" == "Darwin" ]]; then
     local npm_prefix
     npm_prefix="$(npm config get prefix 2>/dev/null || echo "")"
-    local npm_lib="${npm_prefix}/lib"
-    if [[ -n "$npm_prefix" ]] && [[ -d "$npm_lib" ]] && [[ ! -w "$npm_lib" ]]; then
+    local npm_modules="${npm_prefix}/lib/node_modules"
+    if [[ -n "$npm_prefix" ]] && [[ -d "$npm_modules" ]] && [[ ! -w "$npm_modules" ]]; then
       info "npm global dir not writable — redirecting to ~/.npm-global"
       mkdir -p "$HOME/.npm-global"
       npm config set prefix "$HOME/.npm-global"
@@ -503,7 +517,7 @@ install_pi() {
   fi
 
   if run_with_spinner "Installing Helios CLI" \
-      npm install -g @mariozechner/pi-coding-agent --fetch-timeout=60000 --fetch-retries=2; then
+      npm install -g @mariozechner/pi-coding-agent --fetch-timeout=240000; then
     PI_INSTALLED=true
     success "Helios installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
   else
@@ -513,7 +527,7 @@ install_pi() {
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Helios CLI install" \
-        npm install -g @mariozechner/pi-coding-agent --fetch-timeout=60000 --fetch-retries=2; then
+        npm install -g @mariozechner/pi-coding-agent --fetch-timeout=240000; then
       PI_INSTALLED=true
       success "Helios installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
     else
@@ -1757,7 +1771,7 @@ print_quickstart() {
   echo -e "  ${BOLD}Troubleshooting:${RESET}  ${DIM}See $INSTALLER_DIR/README.md${RESET}"
   echo ""
   echo -e "  ${CYAN}ℹ ${RESET}${BOLD}Run 'helios' to log in to your AI provider.${RESET}"
-  echo -e "  ${DIM}  Pi handles authentication via browser login — no API keys needed.${RESET}"
+  echo -e "  ${DIM}  Helios handles authentication via browser login — no API keys needed.${RESET}"
   echo ""
 }
 

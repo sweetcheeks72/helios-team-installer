@@ -875,24 +875,115 @@ install_packages() {
   success "Helios packages installed"
 }
 
+# ─── Bedrock AWS Credentials ──────────────────────────────────────────────────
+_setup_bedrock_credentials() {
+  local env_file="$PI_AGENT_DIR/.env"
+
+  echo ""
+  info "Bedrock requires AWS credentials"
+  echo -e "  ${DIM}  Get them from: AWS Console → IAM → Security Credentials${RESET}"
+  echo ""
+
+  ask "Set up AWS credentials now? [Y/n]:"
+  read -t 120 -r do_aws || do_aws=""
+  do_aws="${do_aws:-y}"
+
+  if [[ ! "$do_aws" =~ ^[Yy]$ ]]; then
+    warn "Skipping — add AWS credentials to ~/.pi/agent/.env before using Bedrock"
+    return 0
+  fi
+
+  ask "AWS_ACCESS_KEY_ID:"
+  read -t 120 -r aws_key_id || aws_key_id=""
+  if [[ -z "$aws_key_id" ]]; then
+    warn "No access key — add to ~/.pi/agent/.env later"
+    return 0
+  fi
+
+  ask "AWS_SECRET_ACCESS_KEY:"
+  read -t 120 -rs aws_secret || aws_secret=""
+  echo ""
+  if [[ -z "$aws_secret" ]]; then
+    warn "No secret key — add to ~/.pi/agent/.env later"
+    return 0
+  fi
+
+  ask "AWS_DEFAULT_REGION (default: us-east-1):"
+  read -t 120 -r aws_region || aws_region=""
+  aws_region="${aws_region:-us-east-1}"
+
+  touch "$env_file"
+  # Remove existing AWS entries, then append
+  grep -v "^AWS_ACCESS_KEY_ID=\|^AWS_SECRET_ACCESS_KEY=\|^AWS_DEFAULT_REGION=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
+  {
+    echo "AWS_ACCESS_KEY_ID=${aws_key_id}"
+    echo "AWS_SECRET_ACCESS_KEY=${aws_secret}"
+    echo "AWS_DEFAULT_REGION=${aws_region}"
+  } >> "${env_file}.tmp"
+  mv "${env_file}.tmp" "$env_file"
+  chmod 600 "$env_file"
+
+  success "AWS credentials saved (region: $aws_region)"
+}
+
 # ─── Provider Selection ───────────────────────────────────────────────────────
 select_provider() {
   step "Provider Configuration"
 
-  # The tarball ships with settings.json pre-configured for all providers.
-  # Pi handles provider auth via OAuth — users log in when they first run 'helios'.
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
-    success "settings.json configured (all providers enabled)"
-    info "Helios handles authentication — run 'helios' to log in to your AI provider"
-  else
-    # Fallback: copy from provider config if settings.json is missing
-    if [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]]; then
-      cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
-      success "settings.json created from template"
-    else
-      warn "settings.json not found — will be created on first run"
+    local current_provider
+    current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider','unknown'))" 2>/dev/null || echo "unknown")
+    success "Current provider: $current_provider"
+    ask "Change provider? [y/N]:"
+    read -t 120 -r change_provider || change_provider=""
+    if [[ ! "$change_provider" =~ ^[Yy]$ ]]; then
+      return 0
     fi
   fi
+
+  echo ""
+  echo -e "  ${BOLD}Select your AI provider:${RESET}"
+  echo ""
+  echo -e "  ${CYAN}1)${RESET} ${BOLD}Anthropic${RESET}                (Claude via direct API)"
+  echo -e "     ${DIM}Auth: browser login — run 'helios' and type /login${RESET}"
+  echo ""
+  echo -e "  ${CYAN}2)${RESET} ${BOLD}Amazon Bedrock${RESET}           (Claude via AWS)"
+  echo -e "     ${DIM}Auth: AWS access key + secret key${RESET}"
+  echo ""
+  echo -e "  ${CYAN}3)${RESET} ${BOLD}OpenAI${RESET}                   (GPT models)"
+  echo -e "     ${DIM}Auth: browser login — run 'helios' and type /login${RESET}"
+  echo ""
+  ask "Selection [1-3] (default: 1):"
+  read -t 120 -r provider_choice || provider_choice=""
+  provider_choice="${provider_choice:-1}"
+
+  case "$provider_choice" in
+    1)
+      SELECTED_PROVIDER="anthropic"
+      [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]] && \
+        cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
+      success "Selected: Anthropic — run 'helios' and type /login to authenticate"
+      ;;
+    2)
+      SELECTED_PROVIDER="amazon-bedrock"
+      [[ -f "$INSTALLER_DIR/provider-configs/bedrock.json" ]] && \
+        cp "$INSTALLER_DIR/provider-configs/bedrock.json" "$PI_AGENT_DIR/settings.json"
+      success "Selected: Amazon Bedrock"
+      _setup_bedrock_credentials
+      ;;
+    3)
+      SELECTED_PROVIDER="openai"
+      [[ -f "$INSTALLER_DIR/provider-configs/openai.json" ]] && \
+        cp "$INSTALLER_DIR/provider-configs/openai.json" "$PI_AGENT_DIR/settings.json"
+      success "Selected: OpenAI — run 'helios' and type /login to authenticate"
+      ;;
+    *)
+      SELECTED_PROVIDER="anthropic"
+      [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]] && \
+        cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
+      success "Defaulting to Anthropic"
+      ;;
+  esac
 }
 
 # ─── Skill-Graph Dependencies ─────────────────────────────────────────────────
@@ -1365,6 +1456,12 @@ setup_api_keys() {
 
 # GitHub token — for PR review via MCP (github.com/settings/tokens)
 GITHUB_TOKEN=
+
+# AWS credentials — required for Amazon Bedrock provider
+# Get from: AWS Console → IAM → Security Credentials
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=us-east-1
 
 # Groq — for Whisper transcription (console.groq.com)
 GROQ_API_KEY=

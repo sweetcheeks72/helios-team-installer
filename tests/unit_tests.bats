@@ -472,3 +472,299 @@ echo \"\$TEST_KEY_WITH_EQ\"
   [ "$result" = "hello=world" ]
 }
 
+
+# ---------------------------------------------------------------------------
+# TEST-1: _timeout_cmd structure (static analysis)
+# ---------------------------------------------------------------------------
+
+@test "_timeout_cmd uses timeout when available" {
+  # The 'if' branch must call 'timeout "$@"'
+  local fn_body
+  fn_body=$(sed -n '/^_timeout_cmd()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$fn_body" | grep -q 'command -v timeout'
+  echo "$fn_body" | grep -q 'timeout "\$@"'
+}
+
+@test "_timeout_cmd falls back to gtimeout" {
+  # The 'elif' branch must call 'gtimeout "$@"'
+  local fn_body
+  fn_body=$(sed -n '/^_timeout_cmd()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$fn_body" | grep -q 'gtimeout'
+  echo "$fn_body" | grep -q 'gtimeout "\$@"'
+}
+
+@test "_timeout_cmd runs without timeout when neither available" {
+  # The 'else' branch must shift the duration arg and run the command directly
+  local fn_body
+  fn_body=$(sed -n '/^_timeout_cmd()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$fn_body" | grep -q 'else'
+  echo "$fn_body" | grep -q 'shift'
+  # After shift, remaining "$@" is the actual command
+  echo "$fn_body" | grep -q '"\$@"'
+}
+
+# ---------------------------------------------------------------------------
+# TEST-1: run_with_spinner functional tests
+#
+# These tests source the extracted functions into a subshell.
+# start_spinner / stop_spinner are stubbed out to avoid /dev/tty writes.
+# _timeout_cmd is overridden where needed to simulate timeout (exit 124)
+# without requiring the 'timeout' binary.
+# ---------------------------------------------------------------------------
+
+# Helper: write installer functions to ${BATS_TMPDIR}/installer_functions.bash
+_ensure_installer_fn_file() {
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  [[ -f "$fn_file" ]] && return 0
+
+  local py="${BATS_TMPDIR}/extract_installer_fns.py"
+  # Write extractor script first (avoids heredoc quoting issues)
+  cat > "$py" << 'PYEOF'
+import re, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    lines = f.read().split('\n')
+out = [
+    'set +euo pipefail',
+    'CYAN="" RESET="" BOLD="" DIM="" GREEN="" RED="" YELLOW=""',
+    'spin_pid=""',
+]
+for fn_name in ['_timeout_cmd', 'start_spinner', 'stop_spinner', 'run_with_spinner']:
+    in_fn, depth, fl = False, 0, []
+    for line in lines:
+        if not in_fn and re.match(r'^' + re.escape(fn_name) + r'\(\)', line):
+            in_fn = True
+        if in_fn:
+            fl.append(line)
+            depth += line.count('{') - line.count('}')
+            if depth <= 0 and len(fl) > 1:
+                break
+    if fl:
+        out.extend(fl)
+        out.append('')
+out += [
+    'success() { echo "SUCCESS: $*"; }',
+    'error()   { echo "ERROR: $*" >&2; }',
+    'warn()    { echo "WARN: $*" >&2; }',
+    'info()    { echo "INFO: $*"; }',
+]
+with open(dst, 'w') as f:
+    f.write('\n'.join(out) + '\n')
+PYEOF
+
+  python3 "$py" "${INSTALLER_DIR}/install.sh" "$fn_file"
+}
+
+@test "run_with_spinner returns exit 124 on timeout" {
+  _ensure_installer_fn_file
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  local log="${BATS_TMPDIR}/rws_timeout_$$.log"
+  touch "$log"
+
+  # Override _timeout_cmd to return 124 immediately, simulating a timeout.
+  # This tests run_with_spinner's handling of exit 124 without needing the
+  # 'timeout' binary.
+  run bash -c "
+    source '$fn_file'
+    export LOG_FILE='$log'
+    export STEP_TIMEOUT=2
+    start_spinner() { :; }
+    stop_spinner()  { :; }
+    _timeout_cmd()  { return 124; }
+    run_with_spinner 'timeout test' sleep 10
+  "
+  [ "$status" -eq 124 ]
+}
+
+@test "run_with_spinner appends timeout message to log on exit 124" {
+  _ensure_installer_fn_file
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  local log="${BATS_TMPDIR}/rws_tmsg_$$.log"
+  touch "$log"
+
+  bash -c "
+    source '$fn_file'
+    export LOG_FILE='$log'
+    export STEP_TIMEOUT=2
+    start_spinner() { :; }
+    stop_spinner()  { :; }
+    _timeout_cmd()  { return 124; }
+    run_with_spinner 'timeout test' sleep 10
+  " 2>/dev/null || true
+
+  grep -q "Timed out" "$log"
+}
+
+@test "run_with_spinner does NOT show timeout message on normal failure" {
+  _ensure_installer_fn_file
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  local log="${BATS_TMPDIR}/rws_nofail_$$.log"
+  touch "$log"
+
+  # Use real _timeout_cmd (just pass-through shift/"$@") for a non-timeout failure
+  run bash -c "
+    source '$fn_file'
+    export LOG_FILE='$log'
+    export STEP_TIMEOUT=5
+    start_spinner() { :; }
+    stop_spinner()  { :; }
+    # Override _timeout_cmd to behave like the 'no timeout binary' else-branch
+    _timeout_cmd()  { shift; \"\$@\"; }
+    run_with_spinner 'failing test' false
+  "
+
+  # Exit code must not be 124
+  [ "$status" -ne 124 ]
+  # Log must not contain the timeout message
+  ! grep -q "Timed out" "$log"
+}
+
+@test "run_with_spinner succeeds on normal command" {
+  _ensure_installer_fn_file
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  local log="${BATS_TMPDIR}/rws_ok_$$.log"
+  touch "$log"
+
+  run bash -c "
+    source '$fn_file'
+    export LOG_FILE='$log'
+    export STEP_TIMEOUT=5
+    start_spinner() { :; }
+    stop_spinner()  { :; }
+    _timeout_cmd()  { shift; \"\$@\"; }
+    run_with_spinner 'success test' true
+  "
+  [ "$status" -eq 0 ]
+}
+
+@test "run_with_spinner provides /dev/null as stdin to commands" {
+  _ensure_installer_fn_file
+  local fn_file="${BATS_TMPDIR}/installer_functions.bash"
+  local log="${BATS_TMPDIR}/rws_stdin_$$.log"
+  touch "$log"
+
+  # 'wc -c' reads all of stdin and prints byte count.
+  # With /dev/null as stdin it gets 0 bytes and exits 0 immediately.
+  # Without /dev/null it would block reading from the terminal.
+  run bash -c "
+    source '$fn_file'
+    export LOG_FILE='$log'
+    export STEP_TIMEOUT=5
+    start_spinner() { :; }
+    stop_spinner()  { :; }
+    _timeout_cmd()  { shift; \"\$@\"; }
+    run_with_spinner 'stdin test' bash -c 'bytes=\$(wc -c); [[ \$bytes -eq 0 ]]'
+  "
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# TEST-2: macOS npm prefix redirect (static analysis)
+# ---------------------------------------------------------------------------
+
+@test "install_pi has macOS npm prefix writability check" {
+  # The Darwin block must reference both Darwin (uname check) and node_modules
+  python3 -c "
+import sys, re
+with open('${INSTALLER_DIR}/install.sh') as f:
+    content = f.read()
+m = re.search(
+    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
+    content, re.DOTALL | re.MULTILINE)
+if not m:
+    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
+block = m.group(0)
+if 'Darwin' not in block:
+    print('ERROR: Darwin check missing from npm prefix block'); sys.exit(1)
+if 'node_modules' not in block:
+    print('ERROR: node_modules reference missing from npm prefix block'); sys.exit(1)
+"
+}
+
+@test "macOS prefix check tests node_modules not just lib" {
+  # The writability check variable must reference 'node_modules' specifically
+  # (not just the 'lib' parent dir), ensuring the right path is tested
+  python3 -c "
+import sys, re
+with open('${INSTALLER_DIR}/install.sh') as f:
+    content = f.read()
+m = re.search(
+    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
+    content, re.DOTALL | re.MULTILINE)
+if not m:
+    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
+block = m.group(0)
+# Must have 'node_modules' in the path variable (not just the bare 'lib' dir)
+if not re.search(r'node_modules', block):
+    print('ERROR: node_modules not in macOS prefix check'); sys.exit(1)
+"
+}
+
+@test "macOS prefix redirect uses ~/.npm-global" {
+  python3 -c "
+import sys, re
+with open('${INSTALLER_DIR}/install.sh') as f:
+    content = f.read()
+m = re.search(
+    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
+    content, re.DOTALL | re.MULTILINE)
+if not m:
+    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
+block = m.group(0)
+if '.npm-global' not in block:
+    print('ERROR: .npm-global redirect missing from macOS prefix block'); sys.exit(1)
+"
+}
+
+@test "macOS prefix redirect adds to PATH" {
+  python3 -c "
+import sys, re
+with open('${INSTALLER_DIR}/install.sh') as f:
+    content = f.read()
+m = re.search(
+    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
+    content, re.DOTALL | re.MULTILINE)
+if not m:
+    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
+block = m.group(0)
+if 'PATH' not in block:
+    print('ERROR: PATH update missing from macOS prefix redirect block'); sys.exit(1)
+"
+}
+
+# ---------------------------------------------------------------------------
+# Additional: Branding invariant — no user-visible "Pi " in output strings
+# ---------------------------------------------------------------------------
+
+@test "no user-visible Pi branding in echo/step/info/warn/success strings" {
+  # Write the checker to a temp file to avoid bash/python quoting conflicts
+  local py="${BATS_TMPDIR}/check_branding.py"
+  cat > "$py" << 'PYEOF'
+import re, sys
+
+src = sys.argv[1]
+with open(src) as f:
+    lines = f.readlines()
+
+output_fn = re.compile(r'\b(echo|step|info|warn|success|error)\b')
+# Match quoted strings containing 'Pi ' (capital P + space) — the user-visible
+# product brand pattern. Skips comments, variable refs ($PI_...), and paths.
+pi_brand = re.compile(r'(?:"[^"]*\bPi [^"]*"|\'[^\']*\bPi [^\']*\')')
+
+violations = []
+for i, line in enumerate(lines, 1):
+    stripped = line.lstrip()
+    if stripped.startswith('#'):
+        continue
+    if not output_fn.search(line):
+        continue
+    if pi_brand.search(line):
+        violations.append((i, line.rstrip()))
+
+if violations:
+    for lineno, text in violations:
+        print('  Line {}: {}'.format(lineno, text))
+    sys.exit(1)
+PYEOF
+  python3 "$py" "${INSTALLER_DIR}/install.sh"
+}

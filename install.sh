@@ -165,7 +165,7 @@ print_banner() {
   ║    ██║  ██║███████╗███████╗██║╚██████╔╝███████║              ║
   ║    ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝ ╚═════╝ ╚══════╝              ║
   ║                                                               ║
-  ║          Team Installer  •  Pi + Helios Orchestrator          ║
+  ║              Team Installer  •  Helios Orchestrator            ║
   ║                                                               ║
   ╚═══════════════════════════════════════════════════════════════╝
 BANNER
@@ -181,7 +181,7 @@ start_spinner() {
   local i=0
   printf '\033[?25l'
   while true; do
-    echo -ne "  ${CYAN}${frames[$i]}${RESET}  ${msg}\r"
+    echo -ne "  ${CYAN}${frames[$i]}${RESET}  ${msg}\r" > /dev/tty 2>/dev/null || true
     i=$(( (i+1) % ${#frames[@]} ))
     sleep 0.1
   done &
@@ -206,12 +206,15 @@ run_with_spinner() {
   tmp_err="$(mktemp)"
   # Run command: stdout to log file (not terminal — spinner is showing).
   # Stderr to temp file for error display on failure.
-  "$@" >> "$LOG_FILE" 2>"$tmp_err" &
+  timeout ${STEP_TIMEOUT:-300} "$@" >> "$LOG_FILE" 2>"$tmp_err" </dev/null &
   local cmd_pid=$!
   # Use || cmd_exit=$? to prevent set -e from firing on failed wait, which would
   # skip stop_spinner and leave the terminal in a corrupt state.
   local cmd_exit=0
   wait $cmd_pid || cmd_exit=$?
+  if [[ $cmd_exit -eq 124 ]]; then
+    echo "  ⚠ Timed out after ${STEP_TIMEOUT:-300}s" >> "$tmp_err"
+  fi
   stop_spinner
   # Append stderr to log file regardless of outcome
   cat "$tmp_err" >> "$LOG_FILE" 2>/dev/null || true
@@ -444,12 +447,12 @@ check_prerequisites() {
 
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
-  step "Pi CLI (npm package)"
+  step "Helios CLI"
 
   if command -v pi &>/dev/null; then
     local pi_ver
     pi_ver=$(pi --version 2>/dev/null | head -1 || echo "unknown")
-    success "Pi CLI already installed: $pi_ver"
+    success "Helios CLI already installed: $pi_ver"
     PI_INSTALLED=true
     return 0
   fi
@@ -458,13 +461,26 @@ install_pi() {
   
   # Pre-flight: fix npm cache permissions (common macOS issue when npm was run with sudo)
   if [[ -d "$HOME/.npm" ]]; then
-    if ! npm cache verify >> "$LOG_FILE" 2>&1; then
+    if ! timeout 60 npm cache verify >> "$LOG_FILE" 2>&1; then
       warn "npm cache issue detected — repairing..."
       chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
       npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     fi
   fi
   
+  # macOS: check if npm global prefix is writable
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    local npm_prefix
+    npm_prefix="$(npm config get prefix 2>/dev/null || echo "")"
+    local npm_lib="${npm_prefix}/lib"
+    if [[ -n "$npm_prefix" ]] && [[ -d "$npm_lib" ]] && [[ ! -w "$npm_lib" ]]; then
+      info "npm global dir not writable — redirecting to ~/.npm-global"
+      mkdir -p "$HOME/.npm-global"
+      npm config set prefix "$HOME/.npm-global"
+      export PATH="$HOME/.npm-global/bin:$PATH"
+    fi
+  fi
+
   # Fix npm global prefix on Linux when it points to /usr or /usr/local (requires sudo).
   # Redirect to ~/.npm-global so installs work without elevated privileges.
   if [[ "$(uname -s)" == "Linux" ]]; then
@@ -487,7 +503,7 @@ install_pi() {
   fi
 
   if run_with_spinner "Installing Helios CLI" \
-      npm install -g @mariozechner/pi-coding-agent; then
+      npm install -g @mariozechner/pi-coding-agent --fetch-timeout=60000 --fetch-retries=2; then
     PI_INSTALLED=true
     success "Helios installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
   else
@@ -497,7 +513,7 @@ install_pi() {
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Helios CLI install" \
-        npm install -g @mariozechner/pi-coding-agent; then
+        npm install -g @mariozechner/pi-coding-agent --fetch-timeout=60000 --fetch-retries=2; then
       PI_INSTALLED=true
       success "Helios installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
     else
@@ -796,7 +812,7 @@ install_helios_cli() {
 
 # ─── Pi Update (Install Packages) ─────────────────────────────────────────────
 install_packages() {
-  step "Installing Pi packages"
+  step "Installing Helios packages"
 
   # Check if packages were bundled in the tarball
   local bundled_count=0
@@ -842,7 +858,7 @@ install_packages() {
     fi
     return 0
   }
-  success "Pi packages installed"
+  success "Helios packages installed"
 }
 
 # ─── Provider Selection ───────────────────────────────────────────────────────
@@ -853,7 +869,7 @@ select_provider() {
   # Pi handles provider auth via OAuth — users log in when they first run 'helios'.
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     success "settings.json configured (all providers enabled)"
-    info "Pi handles authentication — run 'helios' to log in to your AI provider"
+    info "Helios handles authentication — run 'helios' to log in to your AI provider"
   else
     # Fallback: copy from provider config if settings.json is missing
     if [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]]; then
@@ -1316,7 +1332,7 @@ with open(target, 'w') as f:
 setup_api_keys() {
   step "Service Keys (optional)"
 
-  # Pi handles AI provider auth via OAuth (browser login on first run).
+  # Helios handles AI provider auth via OAuth (browser login on first run).
   # These are only for ancillary services that need API keys.
 
   local env_file="$PI_AGENT_DIR/.env"
@@ -1330,7 +1346,7 @@ setup_api_keys() {
   # Create minimal .env for ancillary services only
   cat > "$env_file" << 'ENV_EOF'
 # Helios Service Keys (optional)
-# AI provider auth is handled by Pi OAuth — run 'helios' to log in.
+# AI provider auth is handled by Helios OAuth — run 'helios' to log in.
 # These keys are for ancillary services only.
 
 # GitHub token — for PR review via MCP (github.com/settings/tokens)
@@ -1346,7 +1362,7 @@ ENV_EOF
 
   echo ""
   echo -e "  ${DIM}Optional service keys can be added to: ~/.pi/agent/.env${RESET}"
-  echo -e "  ${DIM}AI provider auth is handled automatically when you run 'helios'.${RESET}"
+  echo -e "  ${DIM}Helios handles AI provider auth automatically when you run 'helios'.${RESET}"
 
   success ".env created (service keys — edit later if needed)"
 }
@@ -1404,7 +1420,7 @@ setup_pi_auth() {
   fi
 
   if [[ -z "$pi_cmd" ]]; then
-    warn "Pi CLI not found — you can log in later by running 'helios'"
+    warn "Helios CLI not found — you can log in later by running 'helios'"
     return 0
   fi
 
@@ -1441,13 +1457,13 @@ setup_pi_auth() {
     return 0
   fi
 
-  ask "Open Pi now to log in? [Y/n]:"
+  ask "Open Helios now to log in? [Y/n]:"
   read -t 120 -r do_login || do_login=""
   do_login="${do_login:-y}"
 
   if [[ "$do_login" =~ ^[Yy]$ ]]; then
     echo ""
-    info "Launching Pi — type /login to connect your AI provider, then /exit when done"
+    info "Launching Helios — type /login to connect your AI provider, then /exit when done"
     echo -e "  ${DIM}────────────────────────────────────────────────────${RESET}"
     echo ""
 
@@ -1658,10 +1674,10 @@ run_verification() {
     if [[ "$keys_set" -gt 0 ]]; then
       success ".env: $keys_set service key(s) configured"
     else
-      info ".env exists — no service keys set (optional, AI auth handled by Pi OAuth)"
+      info ".env exists — no service keys set (optional, AI auth handled by Helios)"
     fi
   else
-    info ".env not found — service keys are optional (AI auth handled by Pi OAuth)"
+    info ".env not found — service keys are optional (AI auth handled by Helios)"
   fi
 
   # settings.json
@@ -1699,8 +1715,11 @@ print_quickstart() {
   fi
   echo ""
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-  echo -e "${BOLD}${GREEN}  ✓ Helios + Pi Installation Complete!${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
+  echo -e "${BOLD}${GREEN}  ✓ Helios Installation Complete!${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  local helios_ver
+  helios_ver=$(helios --version 2>/dev/null || pi --version 2>/dev/null || echo "unknown")
+  echo -e "  ${GREEN}${BOLD}Helios ${helios_ver}${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
 
   # Ensure PATH is set for remainder of installer + user session
   if ! command -v helios &>/dev/null && [[ -f "$HOME/.local/bin/helios" ]]; then
@@ -2173,7 +2192,7 @@ main() {
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites
-    run_step "Pi CLI (npm)"  install_pi
+    run_step "Helios CLI"  install_pi
     run_step "Helios Agent"          setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
     run_step "Helios CLI (symlink)"  install_helios_cli
     # Interactive — must not go through run_step (captures stdout, breaks read prompts)
@@ -2186,7 +2205,7 @@ main() {
     install_pi
   fi
 
-  run_step "Pi Packages"       install_packages
+  run_step "Helios Packages"       install_packages
   run_step "Skill Dependencies" install_skill_deps
   run_step "Governance Deps"    install_governance_deps
 

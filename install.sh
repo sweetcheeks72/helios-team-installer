@@ -2237,21 +2237,26 @@ WSLSTART
   elif [[ "$(uname -s)" == "Linux" ]]; then
     # Docker restart policy (already in compose, but ensure)
     local mg_boot_name
-    mg_boot_name=$(resolve_memgraph_container) || mg_boot_name="memgraph"
+    mg_boot_name=$(resolve_memgraph_container 2>/dev/null) || mg_boot_name="memgraph"
     if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE "^${mg_boot_name}$"; then
       docker update --restart=unless-stopped "$mg_boot_name" >> "${LOG_FILE:-/dev/null}" 2>&1 \
-        && success "Memgraph restart policy" || true
+        && success "Memgraph restart policy" || info "Memgraph restart policy (skipped)"
     fi
 
     # Ollama systemd
     if command -v systemctl &>/dev/null; then
-      systemctl --user enable ollama 2>/dev/null && success "Ollama systemd enabled" || true
+      systemctl --user enable ollama 2>/dev/null && success "Ollama systemd enabled" || info "Ollama systemd (skipped — no user session)"
     fi
 
     # Cron for skill-graph daily
-    if ! crontab -l 2>/dev/null | grep -q "skill-graph"; then
-      (crontab -l 2>/dev/null; echo "0 2 * * * ${HOME}/.pi/agent/scripts/ingest-session-decisions.sh >> ${HOME}/.pi/agent/.skill-graph-daily.log 2>&1") | crontab -
-      success "Skill-graph daily cron"
+    # Note: crontab -l returns exit code 1 when no crontab exists.
+    # Under set -e, piping it directly causes the script to exit.
+    # Fix: capture into a variable first with || true.
+    local existing_crontab
+    existing_crontab=$(crontab -l 2>/dev/null || true)
+    if ! echo "$existing_crontab" | grep -q "skill-graph"; then
+      printf '%s\n%s\n' "$existing_crontab" "0 2 * * * ${HOME}/.pi/agent/scripts/ingest-session-decisions.sh >> ${HOME}/.pi/agent/.skill-graph-daily.log 2>&1" | crontab - 2>/dev/null \
+        && success "Skill-graph daily cron" || info "Skill-graph daily cron (skipped)"
     else success "Skill-graph daily cron (exists)"; fi
   fi
 }
@@ -2325,7 +2330,7 @@ main() {
     run_step "Ollama"            setup_ollama
     run_step "MCP Servers"       setup_mcp_servers
     run_step "Optional Deps"     install_optional_deps
-    setup_boot_services   # LaunchAgents (macOS) / cron (Linux)
+    setup_boot_services || warn "Boot services setup had non-fatal errors (install continues)"
     schedule_bootstrap    # Queue + launch codebase indexing in background
 
     # Interactive — bypasses run_step to avoid stdout capture

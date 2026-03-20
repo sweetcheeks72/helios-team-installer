@@ -1540,8 +1540,21 @@ setup_familiar() {
     return 0
   fi
 
-  if ! run_with_spinner "Cloning familiar → ~/.familiar/" \
-    git clone --single-branch --depth 1 "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR"; then
+  # Check GitHub auth for private repo access
+  if ! gh auth status &>/dev/null 2>&1; then
+    warn "Familiar is a private repo — GitHub authentication required"
+    ask "Run 'gh auth login' now? [Y/n]:"
+    read -t 120 -r do_gh_auth || do_gh_auth=""
+    do_gh_auth="${do_gh_auth:-y}"
+    if [[ "$do_gh_auth" =~ ^[Yy]$ ]]; then
+      gh auth login || { warn "GitHub auth failed — skipping Familiar"; return 0; }
+    else
+      info "Skipping Familiar — run 'gh auth login' later, then clone manually"
+      return 0
+    fi
+  fi
+
+  if ! git clone --single-branch --depth 1 "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR" 2>&1; then
     warn "Could not clone Familiar (repository may require authentication)"
     info "To install Familiar later: gh auth login && git clone https://$FAMILIAR_REPO.git ~/.familiar"
     info "Familiar enables Gmail, Calendar, and Drive skills — it's optional."

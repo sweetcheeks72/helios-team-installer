@@ -152,7 +152,7 @@ if [[ "$PLATFORM" == "Darwin" ]] && ! command -v brew &>/dev/null; then
   BREW_INSTALLER="/tmp/homebrew-install.sh"
   curl -fsSL "$HOMEBREW_INSTALL_URL" -o "$BREW_INSTALLER"
   echo -e "  ${DIM}Downloading Homebrew installer...${RESET}"
-  /bin/bash "$BREW_INSTALLER" </dev/null
+  /bin/bash "$BREW_INSTALLER"
   rm -f "$BREW_INSTALLER"
   # Add brew to PATH for this session
   if [[ -x /opt/homebrew/bin/brew ]]; then
@@ -300,5 +300,4 @@ INSTALLER_COMMIT="$(git -C "$INSTALLER_DIR" rev-parse --short HEAD 2>/dev/null |
 echo -e "  ${DIM}Running install.sh from commit ${INSTALLER_COMMIT}${RESET}"
 
 exec bash "$INSTALLER_DIR/install.sh" "$@"
-"$INSTALLER_DIR/install.sh" "$@"
 }

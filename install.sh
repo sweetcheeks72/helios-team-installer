@@ -847,166 +847,22 @@ install_packages() {
 
 # ─── Provider Selection ───────────────────────────────────────────────────────
 select_provider() {
-  step "AI Provider Selection"
+  step "Provider Configuration"
 
-  echo ""
-  echo -e "  ${BOLD}Choose your primary AI provider:${RESET}"
-  echo ""
-  echo -e "  ${CYAN}1)${RESET} ${BOLD}Anthropic Direct${RESET}        (claude-sonnet-4-5, claude-opus-4)"
-  echo -e "     ${DIM}Best for: Getting started quickly. Pay-per-use API.${RESET}"
-  echo ""
-  echo -e "  ${CYAN}2)${RESET} ${BOLD}Amazon Bedrock${RESET}           (claude-opus-4, claude-sonnet-4-5 via AWS)"
-  echo -e "     ${DIM}Best for: Enterprise, existing AWS accounts, regional compliance.${RESET}"
-  echo ""
-  echo -e "  ${CYAN}3)${RESET} ${BOLD}OpenAI${RESET}                   (gpt-5.2, gpt-4o)"
-  echo -e "     ${DIM}Best for: OpenAI preference, GPT models.${RESET}"
-  echo ""
-  ask "Selection [1-3] (default: 1):"
-  read -t 120 -r provider_choice || provider_choice=""
-  provider_choice="${provider_choice:-1}"
-
-  case "$provider_choice" in
-    1)
-      SELECTED_PROVIDER="anthropic"
-      SELECTED_MODEL="claude-sonnet-4-5"
-      PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/anthropic.json"
-      success "Selected: Anthropic Direct (claude-sonnet-4-5)"
-      ;;
-    2)
-      SELECTED_PROVIDER="amazon-bedrock"
-      SELECTED_MODEL="us.anthropic.claude-opus-4-6-v1"
-      PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/bedrock.json"
-      success "Selected: Amazon Bedrock (claude-opus-4)"
-      warn "Make sure AWS CLI is configured: aws configure"
-      ;;
-    3)
-      SELECTED_PROVIDER="openai"
-      SELECTED_MODEL="gpt-5.2"
-      PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/openai.json"
-      success "Selected: OpenAI (gpt-5.2)"
-      ;;
-    *)
-      warn "Invalid selection — defaulting to Anthropic"
-      SELECTED_PROVIDER="anthropic"
-      SELECTED_MODEL="claude-sonnet-4-5"
-      PROVIDER_CONFIG="$INSTALLER_DIR/provider-configs/anthropic.json"
-      ;;
-  esac
-
-  # MERGE provider config into existing settings.json (don't overwrite!)
+  # The tarball ships with settings.json pre-configured for all providers.
+  # Pi handles provider auth via OAuth — users log in when they first run 'helios'.
   if [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
-    local merge_ok=false
-
-    # Try python3 first
-    if command -v python3 &>/dev/null && python3 -c "import json" 2>/dev/null; then
-      python3 -c "
-import json, sys
-
-with open(sys.argv[1]) as f:
-    existing = json.load(f)
-with open(sys.argv[2]) as f:
-    template = json.load(f)
-
-# Only merge provider-specific fields
-existing['defaultProvider'] = template['defaultProvider']
-existing['defaultModel'] = template['defaultModel']
-existing['assistantName'] = template.get('assistantName', existing.get('assistantName', 'Helios'))
-
-# Merge enabledModels: ADD template models to existing, don't replace
-template_models = set(template.get('enabledModels', []))
-existing_models = set(existing.get('enabledModels', []))
-existing['enabledModels'] = sorted(list(existing_models | template_models))
-
-# Helper to normalize package/skill identifiers for comparison
-def pkg_key(p):
-    if isinstance(p, str):
-        return p
-    if isinstance(p, dict):
-        return p.get('name', p.get('source', str(p)))
-    return str(p)
-
-# Merge skills: add any from template not already present (additive union)
-template_skills = template.get('skills', [])
-existing_skills = existing.get('skills', [])
-existing_skill_keys = set(pkg_key(s) for s in existing_skills)
-for s in template_skills:
-    if pkg_key(s) not in existing_skill_keys:
-        existing_skills.append(s)
-existing['skills'] = existing_skills
-
-# Merge packages: add any from template not already present (additive union)
-template_pkgs = template.get('packages', [])
-existing_pkgs = existing.get('packages', [])
-existing_pkg_keys = set(pkg_key(p) for p in existing_pkgs)
-for p in template_pkgs:
-    if pkg_key(p) not in existing_pkg_keys:
-        existing_pkgs.append(p)
-existing['packages'] = existing_pkgs
-
-# Merge extensions: add any from template not already present (additive union)
-template_exts = template.get('extensions', [])
-existing_exts = existing.get('extensions', [])
-existing_ext_keys = set(pkg_key(e) for e in existing_exts)
-for e in template_exts:
-    if pkg_key(e) not in existing_ext_keys:
-        existing_exts.append(e)
-existing['extensions'] = existing_exts
-
-# Ensure other required keys
-existing.setdefault('enableSkillCommands', True)
-existing.setdefault('hideThinkingBlock', False)
-existing['quietStartup'] = existing.get('quietStartup', template.get('quietStartup', True))
-
-with open(sys.argv[1], 'w') as f:
-    json.dump(existing, f, indent=2)
-    f.write('\n')
-
-print('Merged provider config into existing settings.json')
-" "$PI_AGENT_DIR/settings.json" "$PROVIDER_CONFIG" && merge_ok=true || true
-    fi
-
-    # Fallback to node if python3 failed
-    if [[ "$merge_ok" == false ]] && command -v node &>/dev/null; then
-      node -e "
-const fs = require('fs');
-const existing = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-const template = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-existing.defaultProvider = template.defaultProvider;
-existing.defaultModel = template.defaultModel;
-existing.assistantName = template.assistantName || existing.assistantName || 'Helios';
-// Merge enabledModels (additive union)
-const tModels = new Set(template.enabledModels || []);
-const eModels = new Set(existing.enabledModels || []);
-existing.enabledModels = [...new Set([...eModels, ...tModels])].sort();
-// Merge skills (additive union by name)
-const pkgKey = (p) => typeof p === 'string' ? p : (p.name || p.source || JSON.stringify(p));
-const eSkillKeys = new Set((existing.skills || []).map(pkgKey));
-for (const s of (template.skills || [])) { if (!eSkillKeys.has(pkgKey(s))) (existing.skills = existing.skills || []).push(s); }
-// Merge packages (additive union by name)
-const ePkgKeys = new Set((existing.packages || []).map(pkgKey));
-for (const p of (template.packages || [])) { if (!ePkgKeys.has(pkgKey(p))) (existing.packages = existing.packages || []).push(p); }
-// Merge extensions (additive union by key)
-const eExtKeys = new Set((existing.extensions || []).map(pkgKey));
-for (const e of (template.extensions || [])) { if (!eExtKeys.has(pkgKey(e))) (existing.extensions = existing.extensions || []).push(e); }
-// Preserve boolean settings from template
-for (const k of ['enableSkillCommands','hideThinkingBlock','quietStartup']) {
-  if (template[k] !== undefined && existing[k] === undefined) existing[k] = template[k];
-}
-fs.writeFileSync(process.argv[1], JSON.stringify(existing, null, 2) + '\n');
-console.log('Merged provider config via node fallback');
-" -- "$PI_AGENT_DIR/settings.json" "$PROVIDER_CONFIG" && merge_ok=true || true
-    fi
-
-    if [[ "$merge_ok" == false ]]; then
-      warn "JSON merge failed (python3 and node both unavailable or errored)"
-      warn "Copying provider template as settings.json"
-      cp "$PROVIDER_CONFIG" "$PI_AGENT_DIR/settings.json"
-    fi
+    success "settings.json configured (all providers enabled)"
+    info "Pi handles authentication — run 'helios' to log in to your AI provider"
   else
-    # No existing settings.json — use template as-is
-    cp "$PROVIDER_CONFIG" "$PI_AGENT_DIR/settings.json"
+    # Fallback: copy from provider config if settings.json is missing
+    if [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]]; then
+      cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
+      success "settings.json created from template"
+    else
+      warn "settings.json not found — will be created on first run"
+    fi
   fi
-  success "settings.json configured for $SELECTED_PROVIDER"
 }
 
 # ─── Skill-Graph Dependencies ─────────────────────────────────────────────────
@@ -1458,98 +1314,55 @@ with open(target, 'w') as f:
 
 # ─── API Key Setup ────────────────────────────────────────────────────────────
 setup_api_keys() {
-  step "API Key Setup"
+  step "Service Keys (optional)"
+
+  # Pi handles AI provider auth via OAuth (browser login on first run).
+  # These are only for ancillary services that need API keys.
 
   local env_file="$PI_AGENT_DIR/.env"
-  local env_template="$INSTALLER_DIR/.env.template"
 
-  # Load existing .env if present
   if [[ -f "$env_file" ]]; then
-    info ".env already exists — updating only empty values"
-  else
-    cp "$env_template" "$env_file"
-    chmod 600 "$env_file"
-    info "Created .env from template"
+    info ".env exists — skipping (edit manually if needed)"
+    success "Service keys file present"
+    return
   fi
 
-  echo ""
-  echo -e "  ${BOLD}API Keys${RESET} ${DIM}(press Enter to skip and fill in later)${RESET}"
-  echo ""
+  # Create minimal .env for ancillary services only
+  cat > "$env_file" << 'ENV_EOF'
+# Helios Service Keys (optional)
+# AI provider auth is handled by Pi OAuth — run 'helios' to log in.
+# These keys are for ancillary services only.
 
-  # Helper: prompt for key if not already set
-  prompt_key() {
-    local key_name="$1"
-    local description="$2"
-    local required="${3:-optional}"
-    local current_val
-    current_val=$(grep "^${key_name}=" "$env_file" 2>/dev/null | cut -d'=' -f2- || echo "")
+# GitHub token — for PR review via MCP (github.com/settings/tokens)
+GITHUB_TOKEN=
 
-    if [[ -n "$current_val" ]]; then
-      info "$key_name already set — skipping"
-      return
-    fi
+# Groq — for Whisper transcription (console.groq.com)
+GROQ_API_KEY=
 
-    local label="${GREEN}[required]${RESET}"
-    [[ "$required" == "optional" ]] && label="${DIM}[optional]${RESET}"
-    [[ "$required" == "recommended" ]] && label="${YELLOW}[recommended]${RESET}"
-
-    ask "$key_name $label — $description:"
-    read -t 120 -rs key_val || key_val=""
-    echo ""  # newline after silent read
-
-    if [[ -n "$key_val" ]]; then
-      # Update the env file safely (avoid shell injection from unescaped values)
-      grep -v "^${key_name}=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
-      printf '%s=%s\n' "${key_name}" "${key_val}" >> "${env_file}.tmp"
-      mv "${env_file}.tmp" "$env_file"
-      success "$key_name saved"
-    else
-      warn "$key_name skipped — add to $env_file later"
-      INSTALL_WARNINGS+=("$key_name not set — edit ~/.pi/agent/.env")
-    fi
-  }
-
-  # Provider-specific required key
-  case "$SELECTED_PROVIDER" in
-    anthropic)
-      prompt_key "ANTHROPIC_API_KEY" "from console.anthropic.com/api-keys" "required"
-      ;;
-    amazon-bedrock)
-      prompt_key "AWS_ACCESS_KEY_ID" "from AWS IAM Console" "required"
-      prompt_key "AWS_SECRET_ACCESS_KEY" "from AWS IAM Console" "required"
-      echo ""
-      ask "AWS_DEFAULT_REGION (default: us-east-1):"
-      read -t 120 -r aws_region || aws_region=""
-      aws_region="${aws_region:-us-east-1}"
-      grep -v "^AWS_DEFAULT_REGION=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
-      printf '%s=%s\n' "AWS_DEFAULT_REGION" "${aws_region}" >> "${env_file}.tmp"
-      mv "${env_file}.tmp" "$env_file"
-      ;;
-    openai)
-      prompt_key "OPENAI_API_KEY" "from platform.openai.com/api-keys" "required"
-      ;;
-  esac
-
-  echo ""
-  echo -e "  ${DIM}Additional keys (optional but recommended):${RESET}"
-  prompt_key "GITHUB_TOKEN" "github.com/settings/tokens (for PR review MCP)" "recommended"
-  prompt_key "GROQ_API_KEY" "for transcription/Whisper (console.groq.com)" "optional"
-  prompt_key "FIGMA_MCP_TOKEN" "for Figma MCP server (figma.com → Account → API tokens)" "optional"
-  prompt_key "ANTHROPIC_API_KEY" "for fallback if primary is Bedrock/OpenAI" "optional"
-
-  success ".env configured at $env_file"
-  # Secure .env permissions (API keys should not be world-readable)
+# Figma — for design MCP (figma.com → Account → API tokens)
+FIGMA_MCP_TOKEN=
+ENV_EOF
   chmod 600 "$env_file"
+
+  echo ""
+  echo -e "  ${DIM}Optional service keys can be added to: ~/.pi/agent/.env${RESET}"
+  echo -e "  ${DIM}AI provider auth is handled automatically when you run 'helios'.${RESET}"
+
+  success ".env created (service keys — edit later if needed)"
 }
 
-# ─── Wire API Keys to Shell ───────────────────────────────────────────────────
+# ─── Wire Service Keys to Shell ──────────────────────────────────────────────
 wire_env_to_shell() {
-  step "Wiring API keys to shell environment"
+  step "Shell Environment"
 
   local env_file="$PI_AGENT_DIR/.env"
-  local shell_profile=""
 
-  # Detect shell profile
+  if [[ ! -f "$env_file" ]]; then
+    info "No .env file — skipping shell wiring"
+    return
+  fi
+
+  local shell_profile=""
   if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
     shell_profile="$HOME/.zshrc"
   elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == */bash ]]; then
@@ -1562,44 +1375,16 @@ wire_env_to_shell() {
     shell_profile="$HOME/.profile"
   fi
 
-  local source_line="# Helios/Pi API keys"
   local source_cmd="[ -f ~/.pi/agent/.env ] && set -a && source ~/.pi/agent/.env && set +a"
 
-  if grep -qF "source ~/.pi/agent/.env" "$shell_profile" 2>/dev/null || grep -qF ".pi/agent/.env" "$shell_profile" 2>/dev/null; then
-    success "Shell profile already sources .env"
+  if grep -qF ".pi/agent/.env" "$shell_profile" 2>/dev/null; then
+    success "Shell already sources .env"
   else
     echo "" >> "$shell_profile"
-    echo "$source_line" >> "$shell_profile"
+    echo "# Helios service keys" >> "$shell_profile"
     echo "$source_cmd" >> "$shell_profile"
     success "Added .env sourcing to $shell_profile"
   fi
-
-  # Source now for immediate use
-  if [[ -f "$env_file" ]]; then
-    # L4 fix: use first-'='-only split so values containing '=' (e.g. base64
-    # API keys, URLs with query strings like https://host?a=b) are preserved
-    # verbatim.  The previous approach (IFS-equals-read) relied on bash re-joining
-    # extra fields which is fragile for API keys that contain '=' padding.
-    while IFS= read -r _env_line; do
-      # Strip leading whitespace and skip comments / blanks
-      _env_line="${_env_line#"${_env_line%%[! ]*}"}"
-      [[ -z "$_env_line" || "$_env_line" == \#* ]] && continue
-      # Split on FIRST '=' only
-      _env_key="${_env_line%%=*}"
-      _env_val="${_env_line#*=}"
-      _env_key="${_env_key#export }"            # strip optional 'export ' prefix
-      _env_key="${_env_key#"${_env_key%%[! ]*}"}" # trim leading whitespace
-      _env_key="${_env_key%"${_env_key##*[! ]}"}" # trim trailing whitespace
-      _env_val="${_env_val#"${_env_val%%[! ]*}"}" # trim leading whitespace
-      _env_val="${_env_val%"${_env_val##*[! ]}"}" # trim trailing whitespace
-      _env_val="${_env_val#\"}" ; _env_val="${_env_val%\"}"  # strip double quotes
-      _env_val="${_env_val#\'}" ; _env_val="${_env_val%\'}"  # strip single quotes
-      [[ "$_env_key" =~ ^[A-Z_][A-Z_0-9]*$ ]] && [[ -n "$_env_val" ]] && export "$_env_key=$_env_val"
-    done < "$env_file"
-    success "API keys loaded into current session"
-  fi
-
-  warn "Restart your terminal or run: source $shell_profile"
 }
 
 # ─── Familiar Skills ──────────────────────────────────────────────────────────
@@ -1780,12 +1565,12 @@ run_verification() {
     local keys_set
     keys_set=$(grep -v '^#' "$env_file" 2>/dev/null | grep -v '^$' | grep -v '=$' | _count) || keys_set=0
     if [[ "$keys_set" -gt 0 ]]; then
-      success ".env: $keys_set key(s) configured"
+      success ".env: $keys_set service key(s) configured"
     else
-      warn ".env exists but no keys are set — add at least one API key"
+      info ".env exists — no service keys set (optional, AI auth handled by Pi OAuth)"
     fi
   else
-    warn ".env not found at $env_file"
+    info ".env not found — service keys are optional (AI auth handled by Pi OAuth)"
   fi
 
   # settings.json
@@ -1846,7 +1631,7 @@ print_quickstart() {
   echo -e "       ${DIM}\"Plan and implement user authentication\"${RESET}"
   echo ""
   echo -e "  ${BOLD}Key Files:${RESET}"
-  echo -e "    ${DIM}~/.pi/agent/.env${RESET}          — API keys (edit to add/change)"
+  echo -e "    ${DIM}~/.pi/agent/.env${RESET}          — Service keys (GitHub, Groq — optional)"
   echo -e "    ${DIM}~/.pi/agent/settings.json${RESET} — Provider/model config"
   echo -e "    ${DIM}~/.pi/agent/agents/${RESET}        — Agent definitions"
   echo -e "    ${DIM}~/.pi/agent/skills/${RESET}        — Skill definitions"
@@ -1857,19 +1642,12 @@ print_quickstart() {
   echo -e "    ${DIM}bash ~/helios-team-installer/install.sh${RESET}  — Update everything"
   echo -e "    ${DIM}bash $INSTALLER_DIR/verify.sh${RESET}   — Run health check"
   echo -e "    ${DIM}bash $INSTALLER_DIR/uninstall.sh${RESET} — Uninstall"
-  echo -e "    ${DIM}bash install.sh --fresh${RESET}  — Re-run full setup (provider, keys)"
+  echo -e "    ${DIM}bash install.sh --fresh${RESET}  — Re-run full setup"
   echo ""
   echo -e "  ${BOLD}Troubleshooting:${RESET}  ${DIM}See $INSTALLER_DIR/README.md${RESET}"
   echo ""
-  if [[ -f "$PI_AGENT_DIR/.env" ]]; then
-    local keys_missing
-    keys_missing=$(grep -c '^[A-Z_]*=$' "$PI_AGENT_DIR/.env" 2>/dev/null || echo "0")
-    keys_missing="${keys_missing//[^0-9]/}"
-    keys_missing="${keys_missing:-0}"
-    if [[ "${keys_missing:-0}" -gt 0 ]]; then
-      echo -e "  ${YELLOW}⚠ ${keys_missing} API key(s) not yet set. Edit: ${DIM}~/.pi/agent/.env${RESET}"
-    fi
-  fi
+  echo -e "  ${CYAN}ℹ ${RESET}${BOLD}Run 'helios' to log in to your AI provider.${RESET}"
+  echo -e "  ${DIM}  Pi handles authentication via browser login — no API keys needed.${RESET}"
   echo ""
 }
 
@@ -1905,10 +1683,8 @@ detect_update_mode() {
     if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]] && [[ "$current_provider" != "undefined" ]]; then
       if [[ -f "$PI_AGENT_DIR/.env" ]]; then
         UPDATE_MODE=true
-        SELECTED_PROVIDER="$current_provider"
-        SELECTED_MODEL="${current_model:-}"
-        info "Existing install detected (provider: $SELECTED_PROVIDER)"
-        info "Running in update mode — skipping provider/key prompts"
+        info "Existing install detected"
+        info "Running in update mode — skipping interactive steps"
         info "To re-run full setup: bash install.sh --fresh"
         echo ""
       fi

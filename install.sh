@@ -1008,6 +1008,53 @@ install_skill_deps() {
   fi
 }
 
+# ─── Helios Browse (Browser Automation) ───────────────────────────────────────
+setup_helios_browse() {
+  step "Helios Browse (Browser Automation)"
+
+  # Install playwright-core if not present
+  if node -e "require('playwright-core')" 2>/dev/null; then
+    success "playwright-core available"
+  else
+    run_with_spinner "Installing playwright-core" \
+      bash -c "cd '$PI_AGENT_DIR' && npm install --no-save playwright-core 2>&1" || {
+      warn "playwright-core install failed — browser automation will be unavailable"
+      info "You can retry: cd ~/.pi/agent && npm install playwright-core"
+      INSTALL_WARNINGS+=("playwright-core failed — browser automation unavailable")
+      return 0
+    }
+  fi
+
+  # Install Chromium browser binary
+  if [[ -d "$HOME/.cache/ms-playwright/chromium-"* ]] 2>/dev/null; then
+    success "Chromium browser already installed"
+  else
+    run_with_spinner "Installing Chromium for browser automation" \
+      bash -c "npx playwright-core install chromium 2>&1" || {
+      warn "Chromium install failed — you can install later: npx playwright-core install chromium"
+      INSTALL_WARNINGS+=("Chromium not installed — run: npx playwright-core install chromium")
+    }
+  fi
+
+  # Apply browse Memgraph schema
+  local migrate="$PI_AGENT_DIR/scripts/skill-graph/migrate-browse-schema.js"
+  if [[ -f "$migrate" ]]; then
+    local mg_running=""
+    mg_running=$(resolve_memgraph_container 2>/dev/null) || mg_running=""
+    if [[ -n "$mg_running" ]]; then
+      node "$migrate" >> "$LOG_FILE" 2>&1 && info "Browse schema applied" || \
+        warn "Browse schema migration had issues — see $LOG_FILE"
+    else
+      info "Memgraph not running — browse schema will apply on first use"
+    fi
+  fi
+
+  # Create browser profile/session directories
+  mkdir -p "$HOME/.pi/browser-profiles" "$HOME/.pi/browser-sessions"
+  chmod 700 "$HOME/.pi/browser-profiles"
+  success "Helios Browse configured"
+}
+
 # ─── Governance Extension Dependencies ────────────────────────────────────────
 install_governance_deps() {
   step "Governance Extension Dependencies"
@@ -2331,6 +2378,7 @@ main() {
 
   run_step "Helios Packages"       install_packages
   run_step "Skill Dependencies" install_skill_deps
+  run_step "Helios Browse"      setup_helios_browse
   run_step "Governance Deps"    install_governance_deps
 
   if [[ "$UPDATE_MODE" == false ]]; then

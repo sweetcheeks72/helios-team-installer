@@ -768,3 +768,93 @@ if violations:
 PYEOF
   python3 "$py" "${INSTALLER_DIR}/install.sh"
 }
+
+# ---------------------------------------------------------------------------
+# NEW: update_pi_cli invariants (TASK-01 forensic test plan)
+# ---------------------------------------------------------------------------
+@test "update_pi_cli function exists" {
+  grep -q '^update_pi_cli()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "update_pi_cli uses @helios-agent/cli not @mariozechner" {
+  local body
+  body=$(sed -n '/^update_pi_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q '@helios-agent/cli'
+}
+
+@test "update_pi_cli captures version from stderr (2>&1)" {
+  local body
+  body=$(sed -n '/^update_pi_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q '2>&1'
+}
+
+@test "update_pi_cli has npm view timeout" {
+  local body
+  body=$(sed -n '/^update_pi_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q 'fetch-timeout'
+}
+
+# ---------------------------------------------------------------------------
+# NEW: update_agent_dir invariants
+# ---------------------------------------------------------------------------
+@test "update_agent_dir function exists" {
+  grep -q '^update_agent_dir()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "update_agent_dir uses --ff-only" {
+  local body
+  body=$(sed -n '/^update_agent_dir()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q '\-\-ff-only'
+}
+
+@test "update_agent_dir gates stash on success" {
+  local body
+  body=$(sed -n '/^update_agent_dir()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q 'if git.*stash push'
+}
+
+# ---------------------------------------------------------------------------
+# NEW: FULL_UPDATE flag
+# ---------------------------------------------------------------------------
+@test "FULL_UPDATE flag detected from --full" {
+  grep -q '\-\-full.*FULL_UPDATE=true' "$INSTALLER_DIR/install.sh"
+}
+
+@test "TOTAL_STEPS=9 when FULL_UPDATE" {
+  grep -q 'TOTAL_STEPS=9' "$INSTALLER_DIR/install.sh"
+}
+
+@test "FULL_UPDATE runs setup_memgraph" {
+  local block
+  block=$(grep -A5 'FULL_UPDATE.*true' "$INSTALLER_DIR/install.sh" | tail -n +2)
+  echo "$block" | grep -q 'setup_memgraph'
+}
+
+# ---------------------------------------------------------------------------
+# NEW: snapshot/verify/rollback
+# ---------------------------------------------------------------------------
+@test "snapshot_state function exists" {
+  grep -q '^snapshot_state()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "verify_update function exists" {
+  grep -q '^verify_update()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "rollback_update function exists" {
+  grep -q '^rollback_update()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "verify_update checks settings.json" {
+  local body
+  body=$(sed -n '/^verify_update()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  echo "$body" | grep -q 'settings.json'
+}
+
+# ---------------------------------------------------------------------------
+# NEW: No stale @mariozechner references
+# ---------------------------------------------------------------------------
+@test "no @mariozechner/pi-coding-agent references in installer" {
+  run grep -c '@mariozechner/pi-coding-agent' "$INSTALLER_DIR/install.sh"
+  [ "$output" = "0" ]
+}

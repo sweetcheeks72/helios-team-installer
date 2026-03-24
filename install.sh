@@ -32,6 +32,11 @@ if [[ -f "$INSTALLER_DIR/lib/containers.sh" ]]; then
   source "$INSTALLER_DIR/lib/containers.sh"
 fi
 
+# ─── Source secrets manager library ───────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR/lib/secrets-manager.sh" ]]; then
+  source "$INSTALLER_DIR/lib/secrets-manager.sh"
+fi
+
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 for _arg in "$@"; do
   case "$_arg" in
@@ -184,6 +189,30 @@ _timeout_cmd() {
     shift  # discard the timeout duration argument
     "$@"
   fi
+}
+
+# ─── Retry with Exponential Backoff ──────────────────────────────────────────
+# Usage: retry_with_backoff [max_attempts] [initial_delay_seconds] <command> [args...]
+# Defaults: 3 attempts, 2s initial delay (doubles each retry)
+retry_with_backoff() {
+  local max_attempts="${1:-3}"
+  local delay="${2:-2}"
+  shift 2
+  local cmd=("$@")
+  local attempt=1
+  while (( attempt <= max_attempts )); do
+    if "${cmd[@]}"; then
+      return 0
+    fi
+    if (( attempt < max_attempts )); then
+      warn "Attempt $attempt/$max_attempts failed. Retrying in ${delay}s..."
+      sleep "$delay"
+      delay=$(( delay * 2 ))
+    fi
+    (( attempt++ ))
+  done
+  error "Failed after $max_attempts attempts: ${cmd[*]}"
+  return 1
 }
 
 # ─── Progress Spinner ─────────────────────────────────────────────────────────
@@ -413,7 +442,7 @@ check_prerequisites() {
     success "pnpm $(pnpm -v 2>/dev/null)"
   else
     info "Installing pnpm..."
-    npm install -g pnpm >> "$LOG_FILE" 2>&1 && success "pnpm installed" || warn "pnpm install failed — not critical"
+    retry_with_backoff 3 2 npm install -g pnpm >> "$LOG_FILE" 2>&1 && success "pnpm installed" || warn "pnpm install failed — not critical"
   fi
 
   # ── Docker / OrbStack ───────────────────────────────────────────────────────
@@ -428,7 +457,7 @@ check_prerequisites() {
     case "$platform" in
       macos)
         info "Installing OrbStack (lightweight Docker for macOS)..."
-        brew install --cask orbstack >> "$LOG_FILE" 2>&1 && {
+        retry_with_backoff 3 5 brew install --cask orbstack >> "$LOG_FILE" 2>&1 && {
           success "OrbStack installed — launch it to start Docker"
         } || warn "OrbStack install failed — install manually: https://orbstack.dev"
         ;;
@@ -436,7 +465,7 @@ check_prerequisites() {
         info "Installing Docker CE..."
         if command -v curl &>/dev/null; then
           info "This will run the Docker install script with sudo permissions"
-          curl -fsSL https://get.docker.com 2>/dev/null | sh >> "$LOG_FILE" 2>&1 && {
+          retry_with_backoff 3 5 bash -c "curl -fsSL https://get.docker.com | sh" >> "$LOG_FILE" 2>&1 && {
             sudo usermod -aG docker "$USER" 2>/dev/null || true
             success "Docker CE installed"
           } || warn "Docker install failed — install manually: https://docs.docker.com/engine/install/"
@@ -562,6 +591,44 @@ install_pi() {
       echo -e "    ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
       exit 1
     fi
+  fi
+}
+
+# ─── Pi CLI Update ────────────────────────────────────────────────────────────
+update_pi_cli() {
+  step "Pi CLI"
+
+  if ! command -v pi &>/dev/null; then
+    warn "Pi CLI not found — installing..."
+    install_pi
+    return
+  fi
+
+  local current_ver latest_ver
+  current_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  latest_ver=$(npm view @mariozechner/pi-coding-agent version --fetch-timeout=10000 2>/dev/null || echo "")
+
+  if [[ -z "$latest_ver" ]]; then
+    warn "Could not fetch latest Pi CLI version — skipping"
+    return 0
+  fi
+
+  # Strip leading 'v' for comparison
+  local current_clean latest_clean
+  current_clean="${current_ver#v}"
+  latest_clean="${latest_ver#v}"
+
+  if [[ "$current_clean" == "$latest_clean" ]]; then
+    success "Pi CLI up to date ($current_ver)"
+    return 0
+  fi
+
+  info "Updating Pi CLI: $current_ver → $latest_ver"
+  if run_with_spinner "Updating Pi CLI" \
+      npm install -g @mariozechner/pi-coding-agent; then
+    success "Pi CLI updated: $current_ver → $latest_ver"
+  else
+    warn "Pi CLI update failed — continuing with $current_ver"
   fi
 }
 
@@ -796,6 +863,189 @@ setup_helios_agent() {
   fi
 }
 
+# ─── Agent Directory Update (git-based) ──────────────────────────────────────
+update_agent_dir() {
+  step "Agent Directory"
+
+  if [[ ! -d "$PI_AGENT_DIR/.git" ]]; then
+    info "Agent directory is not a git repo — skipping git update"
+    return 0
+  fi
+
+  # Fetch latest from origin/main
+  if ! git -C "$PI_AGENT_DIR" fetch origin main --quiet 2>/dev/null; then
+    warn "Could not fetch from origin/main — skipping agent update"
+    return 0
+  fi
+
+  local behind
+  behind=$(git -C "$PI_AGENT_DIR" rev-list HEAD..origin/main --count 2>/dev/null || echo "0")
+
+  if [[ "$behind" == "0" ]]; then
+    success "Agent up to date"
+    return 0
+  fi
+
+  info "Agent is $behind commit(s) behind — updating..."
+
+  # Stash if dirty
+  local stashed=false
+  if ! git -C "$PI_AGENT_DIR" diff --quiet 2>/dev/null || \
+     ! git -C "$PI_AGENT_DIR" diff --cached --quiet 2>/dev/null; then
+    info "Stashing local changes..."
+    if git -C "$PI_AGENT_DIR" stash push -m "helios-update-stash-$(date +%s)" 2>/dev/null; then
+      stashed=true
+    else
+      warn "Could not stash local changes — proceeding without stash"
+    fi
+  fi
+
+  if git -C "$PI_AGENT_DIR" pull --ff-only origin main --quiet 2>/dev/null; then
+    success "Agent updated ($behind commit(s) pulled)"
+    if [[ "$stashed" == true ]]; then
+      git -C "$PI_AGENT_DIR" stash pop --quiet 2>/dev/null || \
+        warn "Could not restore stash — check $PI_AGENT_DIR manually"
+    fi
+  else
+    warn "Agent pull failed — run 'git -C $PI_AGENT_DIR pull' manually"
+    if [[ "$stashed" == true ]]; then
+      git -C "$PI_AGENT_DIR" stash pop --quiet 2>/dev/null || true
+    fi
+  fi
+}
+
+# ─── Update Snapshot ──────────────────────────────────────────────────────────
+snapshot_state() {
+  local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
+  local pi_version agent_sha timestamp
+
+  pi_version=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+
+  if [[ -d "$PI_AGENT_DIR/.git" ]]; then
+    agent_sha=$(git -C "$PI_AGENT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+  else
+    agent_sha="unknown"
+  fi
+
+  timestamp=$(date +%s)
+
+  printf '{"pi_version":"%s","agent_sha":"%s","timestamp":%s}\n' \
+    "$pi_version" "$agent_sha" "$timestamp" > "$snapshot_file"
+
+  info "Snapshot saved: pi=$pi_version sha=${agent_sha:0:7} @ $timestamp"
+}
+
+# ─── Update Verification ──────────────────────────────────────────────────────
+verify_update() {
+  step "Update Verification"
+
+  local all_pass=true
+
+  # Check 1: pi --version responds and returns a version string
+  local pi_ver
+  if pi_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
+    success "Pi CLI responds: $pi_ver"
+  else
+    error "Pi CLI check failed — cannot get version"
+    all_pass=false
+  fi
+
+  # Check 2: settings.json exists and is valid JSON
+  local settings_file="$PI_AGENT_DIR/settings.json"
+  if [[ -f "$settings_file" ]]; then
+    if python3 -c "import json; json.load(open('$settings_file'))" 2>/dev/null || \
+       node -e "JSON.parse(require('fs').readFileSync('$settings_file','utf8'))" 2>/dev/null; then
+      success "settings.json exists and is valid JSON"
+    else
+      error "settings.json exists but is not valid JSON"
+      all_pass=false
+    fi
+  else
+    error "settings.json not found at $settings_file"
+    all_pass=false
+  fi
+
+  # Check 3: extensions directory exists
+  if [[ -d "$PI_AGENT_DIR/extensions" ]]; then
+    success "Extensions directory exists"
+  else
+    error "Extensions directory not found at $PI_AGENT_DIR/extensions"
+    all_pass=false
+  fi
+
+  if [[ "$all_pass" == true ]]; then
+    success "All update checks passed"
+    return 0
+  else
+    warn "One or more update checks failed"
+    return 1
+  fi
+}
+
+# ─── Update Rollback ──────────────────────────────────────────────────────────
+rollback_update() {
+  step "Rolling Back Update"
+
+  local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
+  if [[ ! -f "$snapshot_file" ]]; then
+    warn "No snapshot found at $snapshot_file — cannot roll back"
+    return 1
+  fi
+
+  local saved_pi_version saved_agent_sha
+  saved_pi_version=$(python3 -c "import json; print(json.load(open('$snapshot_file'))['pi_version'])" 2>/dev/null || \
+                     node -e "console.log(JSON.parse(require('fs').readFileSync('$snapshot_file','utf8')).pi_version)" 2>/dev/null || echo "")
+  saved_agent_sha=$(python3 -c "import json; print(json.load(open('$snapshot_file'))['agent_sha'])" 2>/dev/null || \
+                    node -e "console.log(JSON.parse(require('fs').readFileSync('$snapshot_file','utf8')).agent_sha)" 2>/dev/null || echo "")
+
+  if [[ -z "$saved_pi_version" ]] || [[ -z "$saved_agent_sha" ]]; then
+    error "Could not parse snapshot — manual rollback required"
+    return 1
+  fi
+
+  local rolled_back=false
+
+  # Roll back agent directory if SHA differs and it's a git repo
+  if [[ -d "$PI_AGENT_DIR/.git" ]] && [[ "$saved_agent_sha" != "unknown" ]]; then
+    local current_sha
+    current_sha=$(git -C "$PI_AGENT_DIR" rev-parse HEAD 2>/dev/null || echo "")
+    if [[ "$current_sha" != "$saved_agent_sha" ]]; then
+      info "Rolling back agent: ${current_sha:0:7} → ${saved_agent_sha:0:7}"
+      if git -C "$PI_AGENT_DIR" reset --hard "$saved_agent_sha" 2>/dev/null; then
+        success "Agent rolled back to ${saved_agent_sha:0:7}"
+        rolled_back=true
+      else
+        error "Agent rollback failed — manual fix: git -C $PI_AGENT_DIR reset --hard $saved_agent_sha"
+      fi
+    else
+      info "Agent SHA unchanged — no rollback needed"
+    fi
+  fi
+
+  # Roll back Pi CLI if version differs
+  if [[ "$saved_pi_version" != "unknown" ]]; then
+    local current_ver
+    current_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+    if [[ "$current_ver" != "$saved_pi_version" ]]; then
+      info "Rolling back Pi CLI: $current_ver → $saved_pi_version"
+      if npm install -g "@mariozechner/pi-coding-agent@${saved_pi_version}" 2>/dev/null; then
+        success "Pi CLI rolled back to $saved_pi_version"
+        rolled_back=true
+      else
+        error "Pi CLI rollback failed — manual fix: npm install -g @mariozechner/pi-coding-agent@${saved_pi_version}"
+      fi
+    else
+      info "Pi CLI version unchanged — no rollback needed"
+    fi
+  fi
+
+  if [[ "$rolled_back" == true ]]; then
+    warn "Rollback complete — resolve update issues before retrying"
+  else
+    info "Nothing to roll back — state matches snapshot"
+  fi
+}
+
 # ─── Helios CLI Command ──────────────────────────────────────────────────────
 install_helios_cli() {
   step "Helios CLI (symlink)"
@@ -962,6 +1212,13 @@ _setup_bedrock_credentials() {
   } >> "${env_file}.tmp"
   mv "${env_file}.tmp" "$env_file"
   chmod 600 "$env_file"
+
+  # Also store secrets in secure backend (Keychain / secret-tool) when available
+  if declare -f secrets_store &>/dev/null; then
+    secrets_store "AWS_ACCESS_KEY_ID" "$aws_key_id"
+    secrets_store "AWS_SECRET_ACCESS_KEY" "$aws_secret"
+    info "AWS credentials also saved to secure storage ($(_secrets_backend))"
+  fi
 
   success "AWS credentials saved (region: $aws_region)"
 }
@@ -1269,7 +1526,7 @@ persist_runtime_contract() {
     echo "MEMGRAPH_HOST=127.0.0.1"
     echo "MEMGRAPH_PORT=7687"
     echo "MEMGRAPH_USER=memgraph"
-    echo "MEMGRAPH_PASS=memgraph"
+    echo "MEMGRAPH_PASSWORD=memgraph"
     echo "OLLAMA_URL=http://localhost:11434"
     echo "HELIOS_GRAPH_BOOTSTRAP_STATE_DIR=$PI_AGENT_DIR/state/codebase-bootstrap"
   } > "$contract_file"
@@ -1381,6 +1638,32 @@ setup_memgraph() {
       < "$schema" >> "$LOG_FILE" 2>&1 && info "Graph schema applied" || true
   fi
 
+  # Verify Memgraph Bolt connectivity (TASK-04: capture result, retry, show logs on failure)
+  if [[ -n "$mg_running" ]]; then
+    local bolt_ok=false
+    local bolt_attempt
+    for bolt_attempt in 1 2 3; do
+      if echo "RETURN 1 AS alive;" | docker exec -i "$mg_running" mgconsole \
+           --username "${MEMGRAPH_USER:-memgraph}" --password "${MEMGRAPH_PASSWORD:-memgraph}" \
+           --output-format csv >> "$LOG_FILE" 2>&1; then
+        bolt_ok=true
+        break
+      fi
+      if (( bolt_attempt < 3 )); then
+        warn "Memgraph Bolt check failed (attempt $bolt_attempt/3) — retrying in 5s..."
+        sleep 5
+      fi
+    done
+    if [[ "$bolt_ok" == true ]]; then
+      success "Memgraph Bolt connection verified"
+    else
+      warn "Memgraph Bolt verification failed after 3 attempts"
+      info "Container logs:"
+      docker logs --tail 20 "$mg_running" 2>&1 | sed 's/^/  /' || true
+      INSTALL_WARNINGS+=("Memgraph Bolt check failed — check container logs: docker logs $mg_running")
+    fi
+  fi
+
   # Persist the resolved runtime contract
   persist_runtime_contract "$mg_running"
 }
@@ -1434,7 +1717,7 @@ setup_ollama() {
       success "$model model ready"
     else
       run_with_spinner "Pulling $model (this may take a few minutes)" \
-        ollama pull "$model" || warn "Failed to pull $model"
+        retry_with_backoff 3 10 ollama pull "$model" || warn "Failed to pull $model"
     fi
   done
 }
@@ -1790,7 +2073,7 @@ setup_familiar() {
     fi
   fi
 
-  if ! git clone --single-branch --depth 1 "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR" 2>&1; then
+  if ! retry_with_backoff 3 5 git clone --single-branch --depth 1 "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR" 2>&1; then
     warn "Could not clone Familiar (repository may require authentication)"
     info "To install Familiar later: gh auth login && git clone https://$FAMILIAR_REPO.git ~/.familiar"
     info "Familiar enables Gmail, Calendar, and Drive skills — it's optional."
@@ -2029,10 +2312,12 @@ print_quickstart() {
 # User can force fresh setup with: bash install.sh --fresh
 detect_update_mode() {
   UPDATE_MODE=false
+  FULL_UPDATE=false
 
   # --fresh flag forces full interactive setup
   for arg in "$@"; do
     [[ "$arg" == "--fresh" ]] && return 0
+    [[ "$arg" == "--full" ]] && { FULL_UPDATE=true; UPDATE_MODE=true; return 0; }
     [[ "$arg" == "--update" ]] && { UPDATE_MODE=true; return 0; }
   done
 
@@ -2426,13 +2711,17 @@ main() {
   detect_update_mode "$@"
 
   # Set TOTAL_STEPS accurately for this run (error-recovery.sh defaults to 0)
-  # Full install: 13 run_step calls. Update mode: 3 run_step calls.
+  # Full install: 13 run_step calls. Update mode: 6 run_step calls.
   if [[ "$UPDATE_MODE" == true ]]; then
-    TOTAL_STEPS=3
+    TOTAL_STEPS=6
     CURRENT_STEP=0
   else
     TOTAL_STEPS=13
     CURRENT_STEP=0
+  fi
+
+  if [[ "${FULL_UPDATE:-false}" == true ]]; then
+    TOTAL_STEPS=9
   fi
 
   # ─── Check for --fresh flag (for checkpoint system) ──────────────────────
@@ -2474,10 +2763,29 @@ main() {
     install_pi
   fi
 
+  if [[ "$UPDATE_MODE" == true ]]; then
+    snapshot_state
+    run_step "Pi CLI"             update_pi_cli
+    run_step "Agent Directory"    update_agent_dir
+  fi
+
   run_step "Helios Packages"       install_packages
   run_step "Skill Dependencies" install_skill_deps
   run_step "Helios Browse"      setup_helios_browse
   run_step "Governance Deps"    install_governance_deps
+
+  if [[ "$UPDATE_MODE" == true ]]; then
+    if ! verify_update; then
+      warn "Update verification failed — initiating rollback..."
+      rollback_update
+    fi
+  fi
+
+  if [[ "${FULL_UPDATE:-false}" == true ]]; then
+    run_step "Memgraph"          setup_memgraph
+    run_step "Ollama"            setup_ollama
+    run_step "MCP Servers"       setup_mcp_servers
+  fi
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Git Hooks"         install_git_hooks

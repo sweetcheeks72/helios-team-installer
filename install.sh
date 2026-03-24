@@ -503,11 +503,11 @@ check_prerequisites() {
 
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
-  step "Helios CLI"
+  step "Helios CLI (@helios-agent/cli)"
 
-  if command -v pi &>/dev/null; then
+  if command -v helios &>/dev/null || npm list -g @helios-agent/cli 2>/dev/null | grep -q @helios-agent/cli; then
     local pi_ver
-    pi_ver=$(pi --version 2>/dev/null | head -1 || echo "unknown")
+    pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
     success "Helios CLI already installed: $pi_ver"
     PI_INSTALLED=true
     return 0
@@ -570,9 +570,9 @@ install_pi() {
   fi
 
   if run_with_spinner "Installing Helios CLI" \
-      npm install -g @mariozechner/pi-coding-agent --fetch-timeout=240000; then
+      npm install -g @helios-agent/cli --fetch-timeout=240000; then
     PI_INSTALLED=true
-    success "Helios installed: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
+    success "Helios installed: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
   else
     # Retry with full cache nuke
     warn "First attempt failed — clearing npm cache and retrying..."
@@ -580,9 +580,9 @@ install_pi() {
     npm cache clean --force >> "$LOG_FILE" 2>&1 || true
     
     if run_with_spinner "Retrying Helios CLI install" \
-        npm install -g @mariozechner/pi-coding-agent --fetch-timeout=240000; then
+        npm install -g @helios-agent/cli --fetch-timeout=240000; then
       PI_INSTALLED=true
-      success "Helios installed on retry: $(pi --version 2>/dev/null | tail -1 || echo 'ok')"
+      success "Helios installed on retry: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
     else
       error "Failed to install Helios CLI."
       echo ""
@@ -598,15 +598,15 @@ install_pi() {
 update_pi_cli() {
   step "Pi CLI"
 
-  if ! command -v pi &>/dev/null; then
+  if ! command -v helios &>/dev/null; then
     warn "Pi CLI not found — installing..."
     install_pi
     return
   fi
 
   local current_ver latest_ver
-  current_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-  latest_ver=$(npm view @mariozechner/pi-coding-agent version --fetch-timeout=10000 2>/dev/null || echo "")
+  current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  latest_ver=$(npm view @helios-agent/cli version --fetch-timeout=10000 2>/dev/null || echo "")
 
   if [[ -z "$latest_ver" ]]; then
     warn "Could not fetch latest Pi CLI version — skipping"
@@ -625,7 +625,7 @@ update_pi_cli() {
 
   info "Updating Pi CLI: $current_ver → $latest_ver"
   if run_with_spinner "Updating Pi CLI" \
-      npm install -g @mariozechner/pi-coding-agent; then
+      npm install -g @helios-agent/cli; then
     success "Pi CLI updated: $current_ver → $latest_ver"
   else
     warn "Pi CLI update failed — continuing with $current_ver"
@@ -919,7 +919,7 @@ snapshot_state() {
   local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
   local pi_version agent_sha timestamp
 
-  pi_version=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  pi_version=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   if [[ -d "$PI_AGENT_DIR/.git" ]]; then
     agent_sha=$(git -C "$PI_AGENT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -941,9 +941,9 @@ verify_update() {
 
   local all_pass=true
 
-  # Check 1: pi --version responds and returns a version string
+  # Check 1: helios --version responds and returns a version string
   local pi_ver
-  if pi_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
+  if pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
     success "Pi CLI responds: $pi_ver"
   else
     error "Pi CLI check failed — cannot get version"
@@ -1025,14 +1025,14 @@ rollback_update() {
   # Roll back Pi CLI if version differs
   if [[ "$saved_pi_version" != "unknown" ]]; then
     local current_ver
-    current_ver=$(pi --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+    current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
     if [[ "$current_ver" != "$saved_pi_version" ]]; then
       info "Rolling back Pi CLI: $current_ver → $saved_pi_version"
-      if npm install -g "@mariozechner/pi-coding-agent@${saved_pi_version}" 2>/dev/null; then
+      if npm install -g "@helios-agent/cli@${saved_pi_version}" 2>/dev/null; then
         success "Pi CLI rolled back to $saved_pi_version"
         rolled_back=true
       else
-        error "Pi CLI rollback failed — manual fix: npm install -g @mariozechner/pi-coding-agent@${saved_pi_version}"
+        error "Pi CLI rollback failed — manual fix: npm install -g @helios-agent/cli@${saved_pi_version}"
       fi
     else
       info "Pi CLI version unchanged — no rollback needed"
@@ -1151,7 +1151,7 @@ install_packages() {
   if [[ -x "$cli_bin" ]]; then
     cli_cmd=("$cli_bin")
   else
-    cli_cmd=(npx @mariozechner/pi-coding-agent)
+    cli_cmd=(npx @helios-agent/cli)
   fi
 
   run_with_spinner "Running package sync" "${cli_cmd[@]}" update || {

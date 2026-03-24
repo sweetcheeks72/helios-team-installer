@@ -32,6 +32,11 @@ if [[ -f "$INSTALLER_DIR/lib/containers.sh" ]]; then
   source "$INSTALLER_DIR/lib/containers.sh"
 fi
 
+# ─── Source secrets manager library ───────────────────────────────────────────
+if [[ -f "$INSTALLER_DIR/lib/secrets-manager.sh" ]]; then
+  source "$INSTALLER_DIR/lib/secrets-manager.sh"
+fi
+
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 for _arg in "$@"; do
   case "$_arg" in
@@ -1076,6 +1081,13 @@ _setup_bedrock_credentials() {
   mv "${env_file}.tmp" "$env_file"
   chmod 600 "$env_file"
 
+  # Also store secrets in secure backend (Keychain / secret-tool) when available
+  if declare -f secrets_store &>/dev/null; then
+    secrets_store "AWS_ACCESS_KEY_ID" "$aws_key_id"
+    secrets_store "AWS_SECRET_ACCESS_KEY" "$aws_secret"
+    info "AWS credentials also saved to secure storage ($(_secrets_backend))"
+  fi
+
   success "AWS credentials saved (region: $aws_region)"
 }
 
@@ -1382,7 +1394,7 @@ persist_runtime_contract() {
     echo "MEMGRAPH_HOST=127.0.0.1"
     echo "MEMGRAPH_PORT=7687"
     echo "MEMGRAPH_USER=memgraph"
-    echo "MEMGRAPH_PASS=memgraph"
+    echo "MEMGRAPH_PASSWORD=memgraph"
     echo "OLLAMA_URL=http://localhost:11434"
     echo "HELIOS_GRAPH_BOOTSTRAP_STATE_DIR=$PI_AGENT_DIR/state/codebase-bootstrap"
   } > "$contract_file"
@@ -1500,7 +1512,7 @@ setup_memgraph() {
     local bolt_attempt
     for bolt_attempt in 1 2 3; do
       if echo "RETURN 1 AS alive;" | docker exec -i "$mg_running" mgconsole \
-           --username "${MEMGRAPH_USER:-memgraph}" --password "${MEMGRAPH_PASS:-memgraph}" \
+           --username "${MEMGRAPH_USER:-memgraph}" --password "${MEMGRAPH_PASSWORD:-memgraph}" \
            --output-format csv >> "$LOG_FILE" 2>&1; then
         bolt_ok=true
         break
@@ -2168,10 +2180,12 @@ print_quickstart() {
 # User can force fresh setup with: bash install.sh --fresh
 detect_update_mode() {
   UPDATE_MODE=false
+  FULL_UPDATE=false
 
   # --fresh flag forces full interactive setup
   for arg in "$@"; do
     [[ "$arg" == "--fresh" ]] && return 0
+    [[ "$arg" == "--full" ]] && { FULL_UPDATE=true; UPDATE_MODE=true; return 0; }
     [[ "$arg" == "--update" ]] && { UPDATE_MODE=true; return 0; }
   done
 
@@ -2574,6 +2588,10 @@ main() {
     CURRENT_STEP=0
   fi
 
+  if [[ "${FULL_UPDATE:-false}" == true ]]; then
+    TOTAL_STEPS=9
+  fi
+
   # ─── Check for --fresh flag (for checkpoint system) ──────────────────────
   FRESH_INSTALL=false
   for _arg in "$@"; do
@@ -2622,6 +2640,12 @@ main() {
   run_step "Skill Dependencies" install_skill_deps
   run_step "Helios Browse"      setup_helios_browse
   run_step "Governance Deps"    install_governance_deps
+
+  if [[ "${FULL_UPDATE:-false}" == true ]]; then
+    run_step "Memgraph"          setup_memgraph
+    run_step "Ollama"            setup_ollama
+    run_step "MCP Servers"       setup_mcp_servers
+  fi
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Git Hooks"         install_git_hooks

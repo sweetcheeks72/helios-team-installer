@@ -146,7 +146,7 @@ if command -v docker &>/dev/null; then
   echo "  Removed Memgraph container"
 fi
 
-# ─── 6. LaunchAgent Cleanup ───────────────────────────────────────────────────
+# ─── 6. LaunchAgent / Cron / WSL Cleanup ──────────────────────────────────────
 if [[ "$(uname -s)" == "Darwin" ]]; then
   echo ""
   echo -e "  ${BOLD}LaunchAgents${RESET}"
@@ -158,6 +158,27 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
       success "Removed $plist"
     fi
   done
+elif [[ "$(uname -s)" == "Linux" ]]; then
+  # Remove cron entries for skill-graph
+  local existing_crontab
+  existing_crontab=$(crontab -l 2>/dev/null || true)
+  if echo "$existing_crontab" | grep -q "skill-graph\|helios"; then
+    ask "Remove Helios cron jobs? [y/N]:"
+    if confirm_or_yes; then
+      echo "$existing_crontab" | grep -v "skill-graph" | grep -v "helios" | crontab - 2>/dev/null
+      success "Removed Helios cron entries"
+    fi
+  fi
+
+  # Remove WSL auto-start block from .bashrc
+  if grep -q "# Helios WSL auto-start" "$HOME/.bashrc" 2>/dev/null; then
+    ask "Remove Helios WSL auto-start from ~/.bashrc? [y/N]:"
+    if confirm_or_yes; then
+      sed -i.bak '/# Helios WSL auto-start/,/^fi$/d' "$HOME/.bashrc" 2>/dev/null
+      rm -f "$HOME/.bashrc.bak"
+      success "Removed WSL auto-start from ~/.bashrc"
+    fi
+  fi
 fi
 
 # ─── 7. Shell Profile Note ────────────────────────────────────────────────────

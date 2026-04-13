@@ -1938,12 +1938,7 @@ setup_searxng() {
   fi
 
   # Check if container already exists
-  local sx_container=""
   if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^helios-searxng$"; then
-    sx_container="helios-searxng"
-  fi
-
-  if [[ -n "$sx_container" ]]; then
     if docker ps --format '{{.Names}}' | grep -q "^helios-searxng$" 2>/dev/null; then
       success "SearXNG running (helios-searxng)"
     else
@@ -1955,28 +1950,29 @@ setup_searxng() {
     return 0
   fi
 
-  # Clone config repo if not present
-  local SEARXNG_DIR="$PI_AGENT_DIR/git/github.com/helios-agi/helios-searxng"
-  if [[ ! -d "$SEARXNG_DIR" ]]; then
-    info "Cloning SearXNG config..."
-    mkdir -p "$(dirname "$SEARXNG_DIR")"
-    git clone --depth 1 https://github.com/helios-agi/helios-searxng.git "$SEARXNG_DIR" >> "$LOG_FILE" 2>&1 || {
-      warn "Failed to clone SearXNG config"
-      return 0
-    }
-  fi
+  # SearXNG config is bundled in the tarball at git/github.com/sweetcheeks72/searxng/
+  # Same pattern as all other private packages — no git clone needed.
+  local SEARXNG_DIR="$PI_AGENT_DIR/git/github.com/sweetcheeks72/searxng"
 
   if [[ ! -f "$SEARXNG_DIR/helios-compose.yml" ]]; then
-    warn "SearXNG compose file not found at $SEARXNG_DIR/helios-compose.yml"
+    warn "SearXNG config not found in bundle ($SEARXNG_DIR)"
+    info "Re-run the installer or update your helios-agent tarball"
+    INSTALL_WARNINGS+=("SearXNG skipped — config not in bundle")
     return 0
   fi
 
-  # Generate a random secret key for this installation
+  # Generate a unique secret key for this installation
   local SECRET_KEY
   SECRET_KEY=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | od -A n -t x1 | tr -d ' \n')
   if [[ -f "$SEARXNG_DIR/helios-settings/settings.yml" ]]; then
-    sed -i.bak "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" 2>/dev/null || \
-    sed -i "" "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" 2>/dev/null
+    # macOS sed needs -i '' ; Linux sed needs -i
+    if [[ "$(uname)" == "Darwin" ]]; then
+      sed -i "" "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" \
+        || warn "Failed to set SearXNG secret key"
+    else
+      sed -i "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" \
+        || warn "Failed to set SearXNG secret key"
+    fi
   fi
 
   info "Starting SearXNG container..."
@@ -1991,15 +1987,13 @@ setup_searxng() {
     if curl -sf http://localhost:8080/healthz > /dev/null 2>&1 || \
        curl -sf http://localhost:8080/ > /dev/null 2>&1; then
       success "SearXNG ready at http://localhost:8080"
-      info "  Engines: General, News, Academic, Code, Legal (CourtListener, Google Scholar Legal)"
-      info "  Legal search: use categories=legal parameter"
+      info "  Engines: General (DDG/Brave/Bing), Legal (CourtListener), Science, Code, News"
       return 0
     fi
     sleep 2
     retries=$((retries + 1))
   done
 
-  # Container started but health check didn't pass — still OK
   if docker ps --format '{{.Names}}' | grep -q "^helios-searxng$" 2>/dev/null; then
     success "SearXNG container running (health check pending)"
   else

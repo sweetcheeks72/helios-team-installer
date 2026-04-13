@@ -1922,6 +1922,91 @@ setup_ollama() {
 }
 
 # ─── MCP Servers ──────────────────────────────────────────────────────────────
+
+# ─── SearXNG (Private Search Engine) ────────────────────────────────────────
+setup_searxng() {
+  step "SearXNG (Private Search Engine)"
+
+  if ! command -v docker &>/dev/null; then
+    warn "Docker not available — SearXNG skipped"
+    return 0
+  fi
+
+  if ! docker info &>/dev/null 2>&1; then
+    warn "Docker not running — SearXNG skipped"
+    return 0
+  fi
+
+  # Check if container already exists
+  local sx_container=""
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^helios-searxng$"; then
+    sx_container="helios-searxng"
+  fi
+
+  if [[ -n "$sx_container" ]]; then
+    if docker ps --format '{{.Names}}' | grep -q "^helios-searxng$" 2>/dev/null; then
+      success "SearXNG running (helios-searxng)"
+    else
+      info "Starting existing SearXNG container..."
+      docker start helios-searxng >> "$LOG_FILE" 2>&1 && \
+        success "SearXNG started" || \
+        warn "Could not start helios-searxng"
+    fi
+    return 0
+  fi
+
+  # Clone config repo if not present
+  local SEARXNG_DIR="$PI_AGENT_DIR/git/github.com/helios-agi/helios-searxng"
+  if [[ ! -d "$SEARXNG_DIR" ]]; then
+    info "Cloning SearXNG config..."
+    mkdir -p "$(dirname "$SEARXNG_DIR")"
+    git clone --depth 1 https://github.com/helios-agi/helios-searxng.git "$SEARXNG_DIR" >> "$LOG_FILE" 2>&1 || {
+      warn "Failed to clone SearXNG config"
+      return 0
+    }
+  fi
+
+  if [[ ! -f "$SEARXNG_DIR/helios-compose.yml" ]]; then
+    warn "SearXNG compose file not found at $SEARXNG_DIR/helios-compose.yml"
+    return 0
+  fi
+
+  # Generate a random secret key for this installation
+  local SECRET_KEY
+  SECRET_KEY=$(openssl rand -hex 32 2>/dev/null || head -c 64 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+  if [[ -f "$SEARXNG_DIR/helios-settings/settings.yml" ]]; then
+    sed -i.bak "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" 2>/dev/null || \
+    sed -i "" "s/secret_key: .*/secret_key: \"${SECRET_KEY}\"/" "$SEARXNG_DIR/helios-settings/settings.yml" 2>/dev/null
+  fi
+
+  info "Starting SearXNG container..."
+  (cd "$SEARXNG_DIR" && docker compose -f helios-compose.yml up -d) >> "$LOG_FILE" 2>&1 || {
+    warn "Failed to start SearXNG — check docker logs"
+    return 0
+  }
+
+  # Wait for SearXNG to be ready
+  local retries=0
+  while [[ $retries -lt 10 ]]; do
+    if curl -sf http://localhost:8080/healthz > /dev/null 2>&1 || \
+       curl -sf http://localhost:8080/ > /dev/null 2>&1; then
+      success "SearXNG ready at http://localhost:8080"
+      info "  Engines: General, News, Academic, Code, Legal (CourtListener, Google Scholar Legal)"
+      info "  Legal search: use categories=legal parameter"
+      return 0
+    fi
+    sleep 2
+    retries=$((retries + 1))
+  done
+
+  # Container started but health check didn't pass — still OK
+  if docker ps --format '{{.Names}}' | grep -q "^helios-searxng$" 2>/dev/null; then
+    success "SearXNG container running (health check pending)"
+  else
+    warn "SearXNG container failed to start"
+  fi
+}
+
 setup_mcp_servers() {
   step "MCP Servers"
 
@@ -2995,6 +3080,7 @@ main() {
 
   if [[ "${FULL_UPDATE:-false}" == true ]]; then
     run_step "Memgraph"          setup_memgraph
+    run_step "SearXNG"           setup_searxng
     run_step "MCP Servers"       setup_mcp_servers
   fi
 
@@ -3002,6 +3088,7 @@ main() {
     run_step "Git Hooks"         install_git_hooks
     run_step "Dep Allowlist"     setup_dep_allowlist
     run_step "Memgraph"          setup_memgraph
+    run_step "SearXNG"           setup_searxng
     run_step "MCP Servers"       setup_mcp_servers
     run_step "Optional Deps"     install_optional_deps
     setup_boot_services || warn "Boot services setup had non-fatal errors (install continues)"

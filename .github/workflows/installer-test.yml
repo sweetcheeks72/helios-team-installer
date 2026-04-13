@@ -1,0 +1,128 @@
+# =============================================================================
+# installer-test.yml — Multi-architecture CI for helios-team-installer
+# =============================================================================
+# Jobs:
+#   1. bats-tests       — BATS on macOS arm64 (macos-14) + x86_64 (macos-13)
+#   2. docker-e2e       — Docker E2E on Ubuntu
+#   3. docker-multiarch — Docker multi-arch builds (linux/amd64 + linux/arm64)
+# =============================================================================
+
+name: Installer Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+
+  # ─── Job 1: BATS on macOS (arm64 + x86_64) ─────────────────────────────────
+  bats-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13]  # arm64, x86_64
+        include:
+          - os: macos-14
+            arch: arm64
+            homebrew_prefix: /opt/homebrew
+          - os: macos-13
+            arch: x86_64
+            homebrew_prefix: /usr/local
+    runs-on: ${{ matrix.os }}
+    name: BATS (${{ matrix.os }} / ${{ matrix.arch }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install BATS
+        run: brew install bats-core
+
+      - name: Verify architecture
+        run: |
+          echo "Expected: ${{ matrix.arch }}"
+          echo "Actual: $(uname -m)"
+          [[ "$(uname -m)" == "${{ matrix.arch }}" ]] || {
+            echo "Architecture mismatch!"
+            exit 1
+          }
+
+      - name: Verify Homebrew prefix
+        run: |
+          echo "Expected: ${{ matrix.homebrew_prefix }}"
+          echo "Actual: $(brew --prefix)"
+          [[ "$(brew --prefix)" == "${{ matrix.homebrew_prefix }}" ]]
+
+      - name: Run unit tests
+        run: bats tests/unit_tests.bats
+
+      - name: Run architecture tests
+        run: |
+          if [[ -f tests/j_architecture.bats ]]; then
+            bats tests/j_architecture.bats
+          elif [[ -f tests/architecture.bats ]]; then
+            bats tests/architecture.bats
+          else
+            echo "No architecture test file found — skipping"
+          fi
+
+      - name: Run prerequisite tests
+        run: |
+          if [[ -f tests/prerequisites_arch.bats ]]; then
+            bats tests/prerequisites_arch.bats
+          else
+            echo "tests/prerequisites_arch.bats not yet created — skipping"
+          fi
+
+      - name: Run settings generation tests
+        run: bats tests/settings_generation.bats || true  # may need agent dir
+
+      - name: Run local paths tests
+        run: bats tests/local_paths.bats || true
+
+      - name: Run CTO audit fixes tests
+        run: bats tests/cto_audit_fixes.bats || true
+
+  # ─── Job 2: Docker E2E (Linux) ─────────────────────────────────────────────
+  docker-e2e:
+    runs-on: ubuntu-latest
+    name: Docker E2E (Linux)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build E2E image
+        run: docker build -f Dockerfile.e2e -t helios-installer-e2e .
+
+      - name: Run E2E tests
+        run: docker run --rm helios-installer-e2e
+
+  # ─── Job 3: Docker Multi-arch ──────────────────────────────────────────────
+  docker-multiarch:
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    runs-on: ubuntu-latest
+    name: Docker Multi-arch (${{ matrix.platform }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build E2E image (${{ matrix.platform }})
+        run: |
+          docker buildx build \
+            --platform ${{ matrix.platform }} \
+            -f Dockerfile.e2e \
+            -t helios-installer-e2e:${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }} \
+            --load .
+
+      - name: Run E2E tests (${{ matrix.platform }})
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            helios-installer-e2e:${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}

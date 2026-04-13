@@ -743,13 +743,6 @@ install_pi() {
     fi
   fi
 
-  # Migrate from @mariozechner/pi-coding-agent → @helios-agent/cli
-  if npm list -g @mariozechner/pi-coding-agent 2>/dev/null | grep -q "@mariozechner/pi-coding-agent"; then
-    info "Migrating from @mariozechner/pi-coding-agent → @helios-agent/cli..."
-    npm uninstall -g @mariozechner/pi-coding-agent >> "$LOG_FILE" 2>&1 || true
-    success "Removed old @mariozechner/pi-coding-agent"
-  fi
-
   if STEP_TIMEOUT="$NPM_INSTALL_TIMEOUT" run_with_spinner "Installing Helios CLI" \
       npm install -g @helios-agent/cli --fetch-timeout=240000; then
     PI_INSTALLED=true
@@ -805,11 +798,6 @@ update_pi_cli() {
   fi
 
   info "Updating Pi CLI: $current_ver → $latest_ver"
-  # Migrate from @mariozechner/pi-coding-agent if present (avoids EEXIST on 'pi' binary)
-  if npm list -g @mariozechner/pi-coding-agent 2>/dev/null | grep -q "@mariozechner/pi-coding-agent"; then
-    info "Removing old @mariozechner/pi-coding-agent..."
-    npm uninstall -g @mariozechner/pi-coding-agent >> "${LOG_FILE:-/dev/null}" 2>&1 || true
-  fi
   if run_with_spinner "Updating Pi CLI" \
       npm install -g @helios-agent/cli; then
     success "Pi CLI updated: $current_ver → $latest_ver"
@@ -1812,8 +1800,13 @@ setup_memgraph() {
           return 0
         fi
       fi
+      # Set DOCKER_DEFAULT_PLATFORM so compose pulls the image for the host arch.
+      # The docker-compose.yml uses `platform: "${DOCKER_DEFAULT_PLATFORM}"` for
+      # the memgraph service, preventing cross-arch emulation on Apple Silicon.
+      local platform_flag
+      platform_flag=$(docker_platform)
       STEP_TIMEOUT="$MEMGRAPH_TIMEOUT" run_with_spinner "Starting Memgraph (first time — downloading image)" \
-        bash -c "cd '$PI_AGENT_DIR/proxies/memgraph' && $compose_cmd up -d" || {
+        bash -c "cd '$PI_AGENT_DIR/proxies/memgraph' && DOCKER_DEFAULT_PLATFORM='$platform_flag' $compose_cmd up -d" || {
         warn "Memgraph failed to start — you can set it up later"
         return 0
       }
@@ -1877,7 +1870,7 @@ setup_ollama() {
   success "Ollama installed"
 
   # Ensure Ollama is running
-  if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+  if ! curl -fs http://localhost:11434/api/tags &>/dev/null; then
     info "Starting Ollama..."
     if pgrep -x ollama &>/dev/null \
        || { [[ "$(uname -s)" == "Darwin" ]] && launchctl list 2>/dev/null | grep -q com.ollama; }; then
@@ -1889,7 +1882,7 @@ setup_ollama() {
     # Wait with retry loop (up to 15s)
     local ollama_ready=false
     for i in {1..15}; do
-      if curl -sf http://localhost:11434/api/tags &>/dev/null; then
+      if curl -fs http://localhost:11434/api/tags &>/dev/null; then
         ollama_ready=true
         break
       fi
@@ -1932,7 +1925,7 @@ setup_mcp_servers() {
   # uv/uvx — needed for mcp-memgraph
   if ! command -v uvx &>/dev/null; then
     info "Installing uv (Python package manager for MCP servers)..."
-    if curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
+    if curl -fLsS https://astral.sh/uv/install.sh 2>/dev/null | sh >> "$LOG_FILE" 2>&1; then
       [ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env" 2>/dev/null || true
       export PATH="$HOME/.local/bin:$PATH"
       success "uv installed"

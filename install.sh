@@ -1667,7 +1667,7 @@ if (!pkgs.includes('neo4j-driver')) {
 
 # ─── Memgraph (Knowledge Graph) ──────────────────────────────────────────────
 
-# ─── Runtime Contract: persist resolved Memgraph + Ollama settings ────────────
+# ─── Runtime Contract: persist resolved Memgraph settings ───────────────────────
 #
 # Priority (container resolution):
 #   1. Existing valid memgraph.env (reuse if MEMGRAPH_CONTAINER still running)
@@ -1856,9 +1856,12 @@ setup_memgraph() {
   persist_runtime_contract "$mg_running"
 }
 
-# ─── Ollama (Local Embeddings) ────────────────────────────────────────────────
+# ─── Ollama (Local LLM Inference — Optional) ─────────────────────────────────
 setup_ollama() {
-  step "Ollama (Local Embeddings — nomic-embed-text)"
+  # DEPRECATED: Embeddings now use MAGE (built into memgraph-mage image).
+  # Ollama is no longer required. This function is retained for users who
+  # want local LLM inference but is not called during standard install.
+  step "Ollama (Optional — Local LLM Inference)"
 
   if ! command -v ollama &>/dev/null; then
     info "Ollama not found — skipping local embeddings"
@@ -2826,11 +2829,13 @@ PLIST_EOF
       success "Session consolidation LaunchAgent"
     else success "Session consolidation LaunchAgent (exists)"; fi
 
-    # Ollama: skip if already managed by Ollama.app
-    if launchctl list 2>/dev/null | grep -q "com.ollama"; then
-      success "Ollama auto-start (managed by Ollama.app)"
-    else
-      info "Ollama: install via Ollama.app for auto-start, or manage manually"
+    # Ollama: only manage if user explicitly has it installed (optional)
+    if command -v ollama &>/dev/null; then
+      if launchctl list 2>/dev/null | grep -q "com.ollama"; then
+        success "Ollama auto-start (managed by Ollama.app)"
+      else
+        info "Ollama: install via Ollama.app for auto-start, or manage manually"
+      fi
     fi
 
   elif is_wsl; then
@@ -2846,9 +2851,6 @@ PLIST_EOF
     echo -e "    ${BOLD}# Start Memgraph (if using Docker Desktop):${RESET}"
     echo -e "    ${DIM}docker start ${mg_name} 2>/dev/null || true${RESET}"
     echo ""
-    echo -e "    ${BOLD}# Start Ollama:${RESET}"
-    echo -e "    ${DIM}ollama serve &${RESET}"
-    echo ""
     echo -e "  ${DIM}Tip: Add these to your ~/.bashrc to auto-start on WSL launch.${RESET}"
     echo ""
     
@@ -2863,15 +2865,15 @@ PLIST_EOF
         cat >> "$HOME/.bashrc" << WSLSTART
 
 # Helios WSL auto-start
-# Start Docker containers and Ollama on WSL session launch
+# Start Docker containers on WSL session launch
 # Start Memgraph if Docker is ready
 if docker info &>/dev/null 2>&1; then
   (docker start ${mg_name} 2>/dev/null &)
 else
   echo "[helios] Docker not ready — start Docker Desktop, then: docker start ${mg_name}"
 fi
-# Start Ollama if not already running
-if ! pgrep -x ollama >/dev/null 2>&1; then
+# Start Ollama only if user explicitly installed it (optional — not required)
+if command -v ollama >/dev/null 2>&1 && ! pgrep -x ollama >/dev/null 2>&1; then
   (nohup ollama serve >> /tmp/ollama.log 2>&1 & disown) 2>/dev/null
 fi
 WSLSTART
@@ -2888,8 +2890,8 @@ WSLSTART
         && success "Memgraph restart policy" || info "Memgraph restart policy (skipped)"
     fi
 
-    # Ollama systemd
-    if command -v systemctl &>/dev/null; then
+    # Ollama systemd (only if user explicitly installed Ollama)
+    if command -v ollama &>/dev/null && command -v systemctl &>/dev/null; then
       systemctl --user enable ollama 2>/dev/null && success "Ollama systemd enabled" || info "Ollama systemd (skipped — no user session)"
     fi
 
@@ -2993,7 +2995,6 @@ main() {
 
   if [[ "${FULL_UPDATE:-false}" == true ]]; then
     run_step "Memgraph"          setup_memgraph
-    run_step "Ollama"            setup_ollama
     run_step "MCP Servers"       setup_mcp_servers
   fi
 
@@ -3001,7 +3002,6 @@ main() {
     run_step "Git Hooks"         install_git_hooks
     run_step "Dep Allowlist"     setup_dep_allowlist
     run_step "Memgraph"          setup_memgraph
-    run_step "Ollama"            setup_ollama
     run_step "MCP Servers"       setup_mcp_servers
     run_step "Optional Deps"     install_optional_deps
     setup_boot_services || warn "Boot services setup had non-fatal errors (install continues)"

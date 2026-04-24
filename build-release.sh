@@ -212,6 +212,10 @@ rsync -a \
   --exclude='.DS_Store' \
   --exclude='memgraph-data/' \
   --exclude='subagent-mesh/' \
+  --exclude='logs/' \
+  --exclude='recaps/' \
+  --exclude='memory/' \
+  --exclude='tmp/' \
   "${SOURCE_DIR}/" \
   "${STAGE_DIR}/"
 

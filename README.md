@@ -359,6 +359,31 @@ bash ~/helios-team-installer/install.sh
 
 ---
 
+## Changelog
+
+### v1.5.0 — Graph Brain × Neuroplasticity (Apr 2026)
+
+- 🧠 **Graph Brain remediation** — 210K orphan nodes patched with memoryClass, 32% → 83% retrieval visibility
+- 🔬 **Governance → Brain feedback loop** — H28 and all gate blocks now create GovernanceLesson nodes retrievable by BrainV2
+- 🧪 **Kaizen learning fixed** — Consolidation stage creates CausalLesson nodes from recurring violations (was querying wrong event type)
+- 🌿 **Physarum flow routing** — Bio-inspired conductivity on RoutingStrategy nodes (slime mold algorithm)
+- 🐜 **Pheromone edge weights** — Code graph edges strengthen on successful sessions, decay over time
+- 📊 **Pressure field** — Scout deposits complexity/risk/novelty signals on CodeFile nodes
+- 🔄 **Hebbian co-activation** — Successful agent pipelines (scout→worker→reviewer) tracked as PipelineRoute nodes
+- ⚖️ **Edge-of-chaos governance** — Adaptive strictness: loosens on stability, tightens on failures (±20%)
+- 🎯 **Active bio routing** — Homeostatic scaling + neuromod signals now actively influence model tier selection
+- 📡 **Dispatch telemetry** — USED_CHANNEL edges link every dispatch to its context channels
+- 🛡️ **28 governance rules enriched** — GovernanceRule nodes seeded with descriptions, categories, severity
+
+### v1.4.0 — Email Governance V2.1 (Apr 2026)
+
+- 🛡️ Email Governance V2.1 — legal/financial/wire content blocked from wrong recipients
+- 📧 Outreach governance gate on all send paths
+- 🔒 Fail-closed: errors block sends, never allow through
+- 📊 43 governance test cases, 4 critical bypasses fixed
+
+---
+
 ## License
 
 Internal tooling — for team use only.

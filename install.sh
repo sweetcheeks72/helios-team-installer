@@ -1320,6 +1320,15 @@ install_packages() {
       fi
     done
 
+    # Verify @helios-agent peer deps are resolvable from agent root
+    if [[ ! -d "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent" ]]; then
+      info "Installing @helios-agent peer dependencies in agent root..."
+      run_with_spinner "npm install (agent root)" \
+        bash -c "cd '$PI_AGENT_DIR' && npm install --production --no-audit --no-fund 2>&1" || {
+        warn "Agent root npm install failed — packages with @helios-agent peer deps may not work"
+      }
+    fi
+
     # Run update for npm packages only (local packages are skipped by Pi)
     STEP_TIMEOUT="$PACKAGE_SYNC_TIMEOUT" run_with_spinner "Syncing npm packages" "${cli_cmd[@]}" update || {
       warn "helios update had issues, but bundled packages are available"
@@ -3090,8 +3099,8 @@ main() {
     run_step "Agent Directory"    update_agent_dir
   fi
 
-  run_step "Helios Packages"       install_packages
   run_step "Agent Root Deps"       install_agent_deps
+  run_step "Helios Packages"       install_packages
   run_step "Skill Dependencies" install_skill_deps
   run_step "Helios Browse"      setup_helios_browse
   run_step "Governance Deps"    install_governance_deps

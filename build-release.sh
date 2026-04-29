@@ -330,6 +330,7 @@ for pkg in "${PACKAGES[@]}"; do
       --exclude='*.gif' \
       --exclude='*.webm' \
       --exclude='.pi/' \
+      --exclude='.helios/' \
       --exclude='dist/' \
       --exclude='*.log' \
       "${local_src}/" \

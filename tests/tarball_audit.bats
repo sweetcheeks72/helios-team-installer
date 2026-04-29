@@ -34,9 +34,9 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "tarball excludes settings.json" {
+@test "tarball contains generated settings.json" {
   run bash -c "tar -tzf '${TARBALL}' | grep -q 'settings\.json'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
 }
 
 @test "tarball excludes run-history.jsonl" {

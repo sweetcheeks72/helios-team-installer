@@ -156,6 +156,7 @@ HELIOS_PRESERVE_FILES=(
 
 HELIOS_RELEASE_URL="https://github.com/helios-agi/helios-team-installer/releases/latest/download"
 HELIOS_AGENT_TARBALL="helios-agent-latest.tar.gz"
+HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/pi-core/releases/download/v0.70.6-helios"
 FAMILIAR_REPO="github.com/helios-agi/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
@@ -698,9 +699,11 @@ check_prerequisites() {
 
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
-  step "Helios CLI (@helios-agent/cli)"
+  step "Helios CLI (tarball from helios-agi/pi-core)"
 
-  if command -v helios &>/dev/null || npm list -g @helios-agent/cli 2>/dev/null | grep -q @helios-agent/cli; then
+  local HELIOS_CLI_BIN="/usr/local/bin/helios"
+
+  if command -v helios &>/dev/null; then
     local pi_ver
     pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
     success "Helios CLI already installed: $pi_ver"
@@ -708,85 +711,61 @@ install_pi() {
     return 0
   fi
 
-  # Fix EACCES on Linux — set npm prefix to ~/.npm-global
-  local platform
-  platform="$(current_platform)"
-  if [[ "$platform" == "linux" ]] || [[ "$platform" == "wsl" ]]; then
-    mkdir -p "$HOME/.npm-global"
-    npm config set prefix "$HOME/.npm-global"
-    export PATH="$HOME/.npm-global/bin:$PATH"
-  fi
+  info "Helios CLI not found — installing from tarball..."
 
-  info "Helios not found — installing via npm..."
-  
-  # Pre-flight: fix npm cache permissions (common macOS issue when npm was run with sudo)
-  if [[ -d "$HOME/.npm" ]]; then
-    if ! _timeout_cmd 60 npm cache verify >> "$LOG_FILE" 2>&1; then
-      warn "npm cache issue detected — repairing..."
-      chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
-      npm cache clean --force >> "$LOG_FILE" 2>&1 || true
-    fi
-  fi
-  
-
-  # macOS: check if npm global prefix is writable
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    local npm_prefix
-    npm_prefix="$(npm config get prefix 2>/dev/null || echo "")"
-    local npm_modules="${npm_prefix}/lib/node_modules"
-    if [[ -n "$npm_prefix" ]] && [[ -d "$npm_modules" ]] && [[ ! -w "$npm_modules" ]]; then
-      info "npm global dir not writable — redirecting to ~/.npm-global"
-      mkdir -p "$HOME/.npm-global"
-      npm config set prefix "$HOME/.npm-global"
-      export PATH="$HOME/.npm-global/bin:$PATH"
-    fi
-  fi
-
-
-  # Fix npm global prefix on Linux when it points to /usr or /usr/local (requires sudo).
-  # Redirect to ~/.npm-global so installs work without elevated privileges.
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    local npm_prefix
-    npm_prefix="$(npm config get prefix 2>/dev/null || echo "")"
-    if [[ "$npm_prefix" == "/usr" || "$npm_prefix" == "/usr/local" ]]; then
-      info "npm global prefix is ${npm_prefix} (requires sudo) — redirecting to ~/.npm-global..."
-      mkdir -p "$HOME/.npm-global"
-      npm config set prefix "$HOME/.npm-global" >> "$LOG_FILE" 2>&1
-      export PATH="$HOME/.npm-global/bin:$PATH"
-      # Persist PATH in user shell profile so it survives the session
-      local profile_file="$HOME/.profile"
-      [[ -f "$HOME/.bashrc" ]] && profile_file="$HOME/.bashrc"
-      [[ -f "$HOME/.zshrc" ]]  && profile_file="$HOME/.zshrc"
-      if ! grep -q 'npm-global' "$profile_file" 2>/dev/null; then
-        echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$profile_file"
+  # Detect platform
+  local arch
+  arch=$(uname -m)
+  local platform_tarball
+  case "$arch" in
+    arm64|aarch64) platform_tarball="pi-darwin-arm64.tar.gz" ;;
+    x86_64)        platform_tarball="pi-darwin-x64.tar.gz" ;;
+    *)
+      # Linux support
+      if [[ "$(uname -s)" == "Linux" ]]; then
+        case "$arch" in
+          aarch64) platform_tarball="pi-linux-arm64.tar.gz" ;;
+          x86_64)  platform_tarball="pi-linux-x64.tar.gz" ;;
+          *)       warn "Unsupported architecture: $arch"; return 1 ;;
+        esac
+      else
+        warn "Unsupported platform: $(uname -s) $arch"
+        return 1
       fi
-      success "npm prefix redirected to ~/.npm-global"
+      ;;
+  esac
+
+  local tarball_url="${HELIOS_CLI_RELEASE_URL}/${platform_tarball}"
+  local tmp_dir
+  tmp_dir=$(mktemp -d)
+
+  if curl -fsSL "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
+    tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1
+    if [[ -f "$tmp_dir/pi/pi" ]]; then
+      # Install binary
+      if [[ -w "$(dirname "$HELIOS_CLI_BIN")" ]]; then
+        cp "$tmp_dir/pi/pi" "$HELIOS_CLI_BIN"
+        chmod +x "$HELIOS_CLI_BIN"
+      else
+        sudo cp "$tmp_dir/pi/pi" "$HELIOS_CLI_BIN"
+        sudo chmod +x "$HELIOS_CLI_BIN"
+      fi
+      PI_INSTALLED=true
+      success "Helios CLI installed at $HELIOS_CLI_BIN"
+    else
+      error "Tarball extracted but binary not found"
+      rm -rf "$tmp_dir"
+      return 1
     fi
+  else
+    error "Failed to download Helios CLI from $tarball_url"
+    echo -e "  ${BOLD}Manual fix:${RESET}"
+    echo -e "    Download from: ${HELIOS_CLI_RELEASE_URL}"
+    rm -rf "$tmp_dir"
+    return 1
   fi
 
-  if STEP_TIMEOUT="$NPM_INSTALL_TIMEOUT" run_with_spinner "Installing Helios CLI" \
-      npm install -g @helios-agent/cli --fetch-timeout=240000; then
-    PI_INSTALLED=true
-    success "Helios installed: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
-  else
-    # Retry with full cache nuke
-    warn "First attempt failed — clearing npm cache and retrying..."
-    chown -R "$(whoami)" "$HOME/.npm" >> "$LOG_FILE" 2>&1 || true
-    npm cache clean --force >> "$LOG_FILE" 2>&1 || true
-    
-    if STEP_TIMEOUT="$NPM_INSTALL_TIMEOUT" run_with_spinner "Retrying Helios CLI install" \
-        npm install -g @helios-agent/cli --fetch-timeout=240000; then
-      PI_INSTALLED=true
-      success "Helios installed on retry: $(helios --version 2>/dev/null | tail -1 || echo 'ok')"
-    else
-      error "Failed to install Helios CLI."
-      echo ""
-      echo -e "  ${BOLD}Manual fix:${RESET}"
-      echo -e "    ${DIM}# Re-run the installer:${RESET}"
-      echo -e "    ${DIM}bash $INSTALLER_DIR/install.sh${RESET}"
-      exit 1
-    fi
-  fi
+  rm -rf "$tmp_dir"
 }
 
 # ─── Pi CLI Update ────────────────────────────────────────────────────────────
@@ -799,32 +778,11 @@ update_pi_cli() {
     return
   fi
 
-  local current_ver latest_ver
+  local current_ver
   current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-  latest_ver=$(npm view @helios-agent/cli version --fetch-timeout=10000 2>/dev/null || echo "")
 
-  if [[ -z "$latest_ver" ]]; then
-    warn "Could not fetch latest Pi CLI version — skipping"
-    return 0
-  fi
-
-  # Strip leading 'v' for comparison
-  local current_clean latest_clean
-  current_clean="${current_ver#v}"
-  latest_clean="${latest_ver#v}"
-
-  if [[ "$current_clean" == "$latest_clean" ]]; then
-    success "Pi CLI up to date ($current_ver)"
-    return 0
-  fi
-
-  info "Updating Pi CLI: $current_ver → $latest_ver"
-  if run_with_spinner "Updating Pi CLI" \
-      npm install -g @helios-agent/cli; then
-    success "Pi CLI updated: $current_ver → $latest_ver"
-  else
-    warn "Pi CLI update failed — continuing with $current_ver"
-  fi
+  info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
+  install_pi
 }
 
 # ─── Helios Agent (Tarball) ───────────────────────────────────────────────────
@@ -1514,6 +1472,34 @@ _apply_provider_config() {
   else
     cp "$provider_cfg" "$PI_AGENT_DIR/settings.json"
   fi
+}
+
+# ─── Agent Root Dependencies ──────────────────────────────────────────────────
+# ~/.pi/agent/package.json declares core deps (awilix, neo4j-driver, typebox,
+# @helios-agent/pi-coding-agent, etc.) that extensions import at runtime.
+# Without this step, ~40+ extensions fail with "Cannot find module" errors.
+install_agent_deps() {
+  step "Agent Root Dependencies"
+
+  if [[ ! -f "$PI_AGENT_DIR/package.json" ]]; then
+    info "No package.json in agent dir — skipping"
+    return 0
+  fi
+
+  if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
+     [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]]; then
+    success "Agent root dependencies already installed"
+    return 0
+  fi
+
+  run_with_spinner "Installing agent root dependencies" \
+    bash -c "cd '$PI_AGENT_DIR' && npm install --production --no-audit --no-fund 2>&1" || {
+    warn "Agent root npm install failed — many extensions will not load"
+    info "You can retry: cd ~/.pi/agent && npm install --production"
+    INSTALL_WARNINGS+=("Agent root deps failed — extensions will be broken")
+    return 0
+  }
+  success "Agent root dependencies installed"
 }
 
 # ─── Skill-Graph Dependencies ─────────────────────────────────────────────────
@@ -3104,6 +3090,7 @@ main() {
   fi
 
   run_step "Helios Packages"       install_packages
+  run_step "Agent Root Deps"       install_agent_deps
   run_step "Skill Dependencies" install_skill_deps
   run_step "Helios Browse"      setup_helios_browse
   run_step "Governance Deps"    install_governance_deps

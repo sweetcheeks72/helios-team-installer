@@ -359,21 +359,25 @@ npm_install_with_recovery() {
 
   # First attempt
   if run_with_spinner "$label" \
-    bash -c "cd '$dir' && npm install --production --legacy-peer-deps --no-audit --no-fund $extra_flags 2>&1"; then
+    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'; then
     return 0
   fi
 
   # Diagnose and repair npm cache
   warn "$label failed — attempting npm cache repair..."
+  local npm_cache_dir
+  npm_cache_dir=$(npm config get cache 2>/dev/null || echo "$HOME/.npm")
 
-  # Fix ownership if ~/.npm exists and is owned by someone else
-  if [[ -d "$HOME/.npm" ]]; then
+  # Fix ownership if cache dir exists and is owned by someone else
+  if [[ -d "$npm_cache_dir" ]]; then
     local npm_owner
-    npm_owner=$(stat -f '%Su' "$HOME/.npm" 2>/dev/null || stat -c '%U' "$HOME/.npm" 2>/dev/null || echo "")
+    npm_owner=$(stat -f '%Su' "$npm_cache_dir" 2>/dev/null || stat -c '%U' "$npm_cache_dir" 2>/dev/null || echo "")
     if [[ -n "$npm_owner" && "$npm_owner" != "$(whoami)" ]]; then
       info "Fixing npm cache ownership ($npm_owner → $(whoami))..."
-      chown -R "$(whoami)" "$HOME/.npm" 2>/dev/null || \
-        warn "Could not fix npm cache ownership — may need: sudo chown -R \$(whoami) ~/.npm"
+      if ! chown -R "$(whoami)" "$npm_cache_dir" 2>/dev/null; then
+        error "Cannot fix npm cache ownership — run: sudo chown -R \$(whoami) $npm_cache_dir"
+        return 1
+      fi
     fi
   fi
 
@@ -384,7 +388,7 @@ npm_install_with_recovery() {
   # Retry
   info "Retrying $label after cache repair..."
   run_with_spinner "$label (retry)" \
-    bash -c "cd '$dir' && npm install --production --legacy-peer-deps --no-audit --no-fund $extra_flags 2>&1"
+    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'
 }
 
 # Verify SHA256 checksum of a file against a checksum file.

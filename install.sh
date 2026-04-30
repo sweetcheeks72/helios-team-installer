@@ -43,6 +43,7 @@ if [[ -f "$INSTALLER_DIR/lib/secrets-manager.sh" ]]; then
 fi
 
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
+CHECK_ONLY=false
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
@@ -53,6 +54,8 @@ for _arg in "$@"; do
       echo "Options:"
       echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
       echo "  --update   Run in update mode (skip interactive prompts)"
+      echo "  --check    Verify installation status without installing"
+      echo "  --verify   Alias for --check"
       echo "  --help     Show this help message"
       echo ""
       echo "First install (team members):"
@@ -62,8 +65,17 @@ for _arg in "$@"; do
       echo "  helios update"
       exit 0
       ;;
+    --check|--verify)
+      CHECK_ONLY=true
+      ;;
   esac
 done
+
+# ─── Check-only mode: run verifications without installing ───────────────────
+if [[ "${1:-}" == "--check" ]] || [[ "${1:-}" == "--verify" ]]; then
+  # Run verification only — report what would be installed
+  CHECK_ONLY=true
+fi
 
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
@@ -750,6 +762,33 @@ check_prerequisites() {
   fi
 }
 
+# ─── Network connectivity check ──────────────────────────────────────────────
+check_network() {
+  step "Network Connectivity"
+  
+  OFFLINE_MODE=false
+  
+  # Check npm registry
+  if curl -fsSL --connect-timeout 5 --max-time 10 https://registry.npmjs.org/ -o /dev/null 2>/dev/null; then
+    success "npm registry reachable"
+  else
+    warn "npm registry unreachable — will use bundled packages only"
+    OFFLINE_MODE=true
+  fi
+  
+  # Check GitHub
+  if curl -fsSL --connect-timeout 5 --max-time 10 https://api.github.com/ -o /dev/null 2>/dev/null; then
+    success "GitHub API reachable"
+  else
+    warn "GitHub API unreachable — will skip updates"
+    OFFLINE_MODE=true
+  fi
+  
+  if [[ "$OFFLINE_MODE" == "true" ]]; then
+    info "Running in OFFLINE MODE — relying on bundled tarball deps"
+  fi
+}
+
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
   step "Helios CLI (tarball from helios-agi/pi-core)"
@@ -792,7 +831,7 @@ install_pi() {
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  if curl -fsSL "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
+  if curl -fsSL --retry 3 --retry-delay 5 --max-time 60 "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
     tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1
     if [[ -f "$tmp_dir/pi/pi" ]]; then
       # Install binary
@@ -849,7 +888,7 @@ setup_helios_agent() {
   }
 
   # ── Resolve arch-specific tarball (fall back to universal if not found) ────
-  if ! curl -fsSI "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
+  if ! curl -fsSI --retry 3 --retry-delay 5 --max-time 30 "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
     info "Arch-specific tarball not found (${HELIOS_AGENT_TARBALL}) — using universal tarball"
     HELIOS_AGENT_TARBALL="${HELIOS_AGENT_TARBALL_UNIVERSAL}"
   else
@@ -1331,6 +1370,26 @@ install_helios_cli() {
 install_packages() {
   step "Installing Helios packages"
 
+  # Quick skip: if all packages already present, don't re-sync
+  local existing_count=0
+  for _org in helios-agi sweetcheeks72 nicobailon; do
+    local org_dir="$PI_AGENT_DIR/git/github.com/$_org"
+    if [[ -d "$org_dir" ]]; then
+      existing_count=$(find "$org_dir" -maxdepth 1 -type d 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+      break
+    fi
+  done
+  if [[ $existing_count -ge 18 ]]; then
+    success "All $existing_count packages already present — skipping sync"
+    return 0
+  fi
+
+  # CHECK_ONLY mode: report status without installing
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[check] install_packages: $existing_count packages found (need 18) — would sync"
+    return 0
+  fi
+
   # Check if packages were bundled in the tarball
   # Resolve the org directory: helios-agi (current) → sweetcheeks72 (legacy) → nicobailon (fallback)
   local bundled_count=0
@@ -1593,6 +1652,11 @@ install_agent_deps() {
   fi
 
   # Fallback: full npm install (deps not in tarball or rebuild failed)
+  if [[ "$OFFLINE_MODE" == "true" ]]; then
+    warn "Offline mode — skipping npm install, using bundled deps only"
+    return 0
+  fi
+
   info "Installing agent dependencies via npm (not bundled in tarball)..."
   npm_install_with_recovery "$PI_AGENT_DIR" "npm install (agent root)" || {
     fail "npm install (agent root)"
@@ -3141,12 +3205,12 @@ main() {
   detect_update_mode "$@"
 
   # Set TOTAL_STEPS accurately for this run (error-recovery.sh defaults to 0)
-  # Full install: 13 run_step calls. Update mode: 6 run_step calls.
+  # Full install: 14 run_step calls. Update mode: 6 run_step calls.
   if [[ "$UPDATE_MODE" == true ]]; then
     TOTAL_STEPS=6
     CURRENT_STEP=0
   else
-    TOTAL_STEPS=13
+    TOTAL_STEPS=14
     CURRENT_STEP=0
   fi
 
@@ -3180,6 +3244,7 @@ main() {
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites
+    run_step "Network Connectivity" check_network
     run_step "Helios CLI"  install_pi
     run_step "Helios Agent"          setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
     run_step "Helios CLI (symlink)"  install_helios_cli

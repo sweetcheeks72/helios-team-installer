@@ -3080,6 +3080,9 @@ main() {
     run_step "Helios CLI (symlink)"  install_helios_cli
     # Interactive — must not go through run_step (captures stdout, breaks read prompts)
     select_provider
+    # Normalize org paths in settings.json after provider selection (fresh install)
+    _migrate_settings_packages
+    _prune_stale_org_dirs
   fi
 
   # Ensure Pi is available before running packages (may have been uninstalled)

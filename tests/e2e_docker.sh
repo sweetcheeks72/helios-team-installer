@@ -223,6 +223,43 @@ if [[ "${env_exists_result}" == "0" ]]; then
   rm -f "${env_dest}"
 fi
 
+# ─── 6. npm cache recovery ─────────────────────────────────────────────────────
+section "npm cache recovery"
+
+test_npm_cache_recovery() {
+  echo "Testing npm cache recovery logic..."
+  
+  # Verify the recovery function exists
+  if ! grep -q 'npm_install_with_recovery()' "$INSTALLER_DIR/install.sh"; then
+    echo "FAIL: npm_install_with_recovery() not found in install.sh"
+    return 1
+  fi
+  
+  # Verify it's used by install_agent_deps
+  if ! grep -A50 'install_agent_deps()' "$INSTALLER_DIR/install.sh" | grep -q 'npm_install_with_recovery'; then
+    echo "FAIL: install_agent_deps doesn't use npm_install_with_recovery"
+    return 1
+  fi
+  
+  # Test with clean environment (should pass first try)
+  local test_dir
+  test_dir=$(mktemp -d)
+  echo '{"name":"test","version":"1.0.0","private":true,"dependencies":{}}' > "$test_dir/package.json"
+  
+  if ! (cd "$test_dir" && npm install --production --legacy-peer-deps --no-audit --no-fund 2>&1); then
+    echo "FAIL: basic npm install doesn't work in this environment"
+    rm -rf "$test_dir"
+    return 1
+  fi
+  
+  rm -rf "$test_dir"
+  echo "PASS: npm cache recovery logic present and install works"
+}
+
+npm_recovery_result=0
+test_npm_cache_recovery || npm_recovery_result=$?
+assert_true "npm_install_with_recovery() present and npm install works" "${npm_recovery_result}"
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "  ─────────────────────────────────────────────"

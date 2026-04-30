@@ -487,6 +487,11 @@ echo "   This makes the tarball self-contained — no npm install needed on targ
 
 # Agent root dependencies (awilix, neo4j-driver, better-sqlite3, etc.)
 if [[ -f "${STAGE_DIR}/package.json" ]]; then
+  echo "  → Verifying npm cache health..."
+  npm cache verify 2>/dev/null || {
+    echo "  ⚠ npm cache verify failed — cleaning..."
+    npm cache clean --force 2>/dev/null || true
+  }
   echo "  → Agent root: npm install --production ..."
   (cd "${STAGE_DIR}" && npm install --production --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -5) || {
     echo "❌ FATAL: Agent root npm install failed. Tarball would be broken."

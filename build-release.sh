@@ -319,7 +319,7 @@ PACKAGES=(
   pi-annotate
   pi-skill-palette
   pi-boomerang
-  searxng
+  helios-searxng
 )
 
 bundled=0

@@ -2025,8 +2025,8 @@ setup_searxng() {
   # SearXNG config is bundled in the tarball — resolve org directory with fallback
   local SEARXNG_DIR=""
   for _org in helios-agi sweetcheeks72 nicobailon; do
-    if [[ -f "$PI_AGENT_DIR/git/github.com/$_org/searxng/helios-compose.yml" ]]; then
-      SEARXNG_DIR="$PI_AGENT_DIR/git/github.com/$_org/searxng"
+    if [[ -f "$PI_AGENT_DIR/git/github.com/$_org/helios-searxng/helios-compose.yml" ]]; then
+      SEARXNG_DIR="$PI_AGENT_DIR/git/github.com/$_org/helios-searxng"
       break
     fi
   done

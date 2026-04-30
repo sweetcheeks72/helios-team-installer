@@ -1345,7 +1345,7 @@ install_packages() {
     if [[ ! -d "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent" ]]; then
       info "Installing @helios-agent peer dependencies in agent root..."
       run_with_spinner "npm install (agent root)" \
-        bash -c "cd '$PI_AGENT_DIR' && npm install --production --no-audit --no-fund 2>&1" || {
+        bash -c "cd '$PI_AGENT_DIR' && npm install --production --legacy-peer-deps --no-audit --no-fund 2>&1" || {
         warn "Agent root npm install failed — packages with @helios-agent peer deps may not work"
       }
     fi
@@ -1518,8 +1518,7 @@ install_agent_deps() {
 
   # Check if deps were bundled in tarball (self-contained install)
   if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
-     [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]] && \
-     [[ -d "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent" ]]; then
+     [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]]; then
 
     # Verify native modules load on this architecture
     local native_ok=true
@@ -1547,7 +1546,7 @@ install_agent_deps() {
   # Fallback: full npm install (deps not in tarball or rebuild failed)
   info "Installing agent dependencies via npm (not bundled in tarball)..."
   run_with_spinner "npm install (agent root)" \
-    bash -c "cd '$PI_AGENT_DIR' && npm install --production --no-audit --no-fund 2>&1" || {
+    bash -c "cd '$PI_AGENT_DIR' && npm install --production --legacy-peer-deps --no-audit --no-fund 2>&1" || {
     warn "Agent root npm install failed — many extensions will not load"
     info "You can retry: cd ~/.pi/agent && npm install --production"
     INSTALL_WARNINGS+=("Agent root deps failed — extensions will be broken")

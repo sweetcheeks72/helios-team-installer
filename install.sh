@@ -43,6 +43,7 @@ if [[ -f "$INSTALLER_DIR/lib/secrets-manager.sh" ]]; then
 fi
 
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
+CHECK_ONLY=false
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
@@ -53,6 +54,8 @@ for _arg in "$@"; do
       echo "Options:"
       echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
       echo "  --update   Run in update mode (skip interactive prompts)"
+      echo "  --check    Verify installation status without installing"
+      echo "  --verify   Alias for --check"
       echo "  --help     Show this help message"
       echo ""
       echo "First install (team members):"
@@ -62,8 +65,17 @@ for _arg in "$@"; do
       echo "  helios update"
       exit 0
       ;;
+    --check|--verify)
+      CHECK_ONLY=true
+      ;;
   esac
 done
+
+# ─── Check-only mode: run verifications without installing ───────────────────
+if [[ "${1:-}" == "--check" ]] || [[ "${1:-}" == "--verify" ]]; then
+  # Run verification only — report what would be installed
+  CHECK_ONLY=true
+fi
 
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
@@ -359,7 +371,7 @@ npm_install_with_recovery() {
 
   # First attempt
   if run_with_spinner "$label" \
-    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'; then
+    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'; then
     return 0
   fi
 
@@ -388,7 +400,7 @@ npm_install_with_recovery() {
   # Retry
   info "Retrying $label after cache repair..."
   run_with_spinner "$label (retry)" \
-    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'
+    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'
 }
 
 # Verify SHA256 checksum of a file against a checksum file.
@@ -750,6 +762,33 @@ check_prerequisites() {
   fi
 }
 
+# ─── Network connectivity check ──────────────────────────────────────────────
+check_network() {
+  step "Network Connectivity"
+  
+  OFFLINE_MODE=false
+  
+  # Check npm registry
+  if curl -fsSL --connect-timeout 5 --max-time 10 https://registry.npmjs.org/ -o /dev/null 2>/dev/null; then
+    success "npm registry reachable"
+  else
+    warn "npm registry unreachable — will use bundled packages only"
+    OFFLINE_MODE=true
+  fi
+  
+  # Check GitHub
+  if curl -fsSL --connect-timeout 5 --max-time 10 https://api.github.com/ -o /dev/null 2>/dev/null; then
+    success "GitHub API reachable"
+  else
+    warn "GitHub API unreachable — will skip updates"
+    OFFLINE_MODE=true
+  fi
+  
+  if [[ "$OFFLINE_MODE" == "true" ]]; then
+    info "Running in OFFLINE MODE — relying on bundled tarball deps"
+  fi
+}
+
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
   step "Helios CLI (tarball from helios-agi/pi-core)"
@@ -792,7 +831,7 @@ install_pi() {
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  if curl -fsSL "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
+  if curl -fsSL --retry 3 --retry-delay 5 --max-time 60 "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
     tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1
     if [[ -f "$tmp_dir/pi/pi" ]]; then
       # Install binary
@@ -849,7 +888,7 @@ setup_helios_agent() {
   }
 
   # ── Resolve arch-specific tarball (fall back to universal if not found) ────
-  if ! curl -fsSI "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
+  if ! curl -fsSI --retry 3 --retry-delay 5 --max-time 30 "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
     info "Arch-specific tarball not found (${HELIOS_AGENT_TARBALL}) — using universal tarball"
     HELIOS_AGENT_TARBALL="${HELIOS_AGENT_TARBALL_UNIVERSAL}"
   else
@@ -1331,6 +1370,26 @@ install_helios_cli() {
 install_packages() {
   step "Installing Helios packages"
 
+  # Quick skip: if all packages already present, don't re-sync
+  local existing_count=0
+  for _org in helios-agi sweetcheeks72 nicobailon; do
+    local org_dir="$PI_AGENT_DIR/git/github.com/$_org"
+    if [[ -d "$org_dir" ]]; then
+      existing_count=$(find "$org_dir" -maxdepth 1 -type d 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+      break
+    fi
+  done
+  if [[ $existing_count -ge 18 ]]; then
+    success "All $existing_count packages already present — skipping sync"
+    return 0
+  fi
+
+  # CHECK_ONLY mode: report status without installing
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[check] install_packages: $existing_count packages found (need 18) — would sync"
+    return 0
+  fi
+
   # Check if packages were bundled in the tarball
   # Resolve the org directory: helios-agi (current) → sweetcheeks72 (legacy) → nicobailon (fallback)
   local bundled_count=0
@@ -1375,7 +1434,7 @@ install_packages() {
       if [[ -f "${pkg_dir}package.json" ]] && [[ ! -d "${pkg_dir}node_modules" ]]; then
         local pkg_name
         pkg_name="$(basename "$pkg_dir")"
-        run_with_spinner "npm install: $pkg_name" npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
+        run_with_spinner "npm install: $pkg_name" timeout 120 npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
           warn "npm install failed for $pkg_name — may work without it"
         }
       elif [[ -d "${pkg_dir}node_modules" ]]; then
@@ -1557,6 +1616,17 @@ install_agent_deps() {
     return 0
   fi
 
+  # CHECK_ONLY mode: report status without installing
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
+       [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]]; then
+      info "[check] install_agent_deps: awilix + neo4j-driver present"
+    else
+      info "[check] install_agent_deps: deps missing — would run npm install"
+    fi
+    return 0
+  fi
+
   # Check if deps were bundled in tarball (self-contained install)
   if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
      [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]]; then
@@ -1568,8 +1638,22 @@ install_agent_deps() {
     fi
 
     if [[ "$native_ok" == "true" ]]; then
-      success "Agent deps present from tarball — native modules verified ✓"
-      return 0
+      # After native modules check passes, also verify ESM import works
+      local esm_ok=true
+      if [[ -f "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js" ]]; then
+        node --input-type=module -e "
+          import { pathToFileURL } from 'url';
+          await import(pathToFileURL('$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js'));
+        " 2>/dev/null || esm_ok=false
+      else
+        esm_ok=false
+      fi
+
+      if [[ "$esm_ok" == "true" ]]; then
+        success "Agent deps verified — pi-coding-agent ESM import OK ✓"
+        return 0
+      fi
+      # ESM import failed — fall through to full npm install
     else
       info "Deps present but native modules need rebuild for $(uname -m)..."
       run_with_spinner "Rebuild native modules" \
@@ -1584,15 +1668,41 @@ install_agent_deps() {
     fi
   fi
 
+  # Backup bundled node_modules before npm install (restore on failure)
+  local nm_backup=""
+  if [[ -d "$PI_AGENT_DIR/node_modules" ]]; then
+    nm_backup="$PI_AGENT_DIR/node_modules.pre-install-backup"
+    info "Backing up bundled node_modules..."
+    cp -a "$PI_AGENT_DIR/node_modules" "$nm_backup" 2>/dev/null || nm_backup=""
+  fi
+
   # Fallback: full npm install (deps not in tarball or rebuild failed)
+  if [[ "$OFFLINE_MODE" == "true" ]]; then
+    warn "Offline mode — skipping npm install, using bundled deps only"
+    return 0
+  fi
+
   info "Installing agent dependencies via npm (not bundled in tarball)..."
   npm_install_with_recovery "$PI_AGENT_DIR" "npm install (agent root)" || {
     fail "npm install (agent root)"
     warn "Agent root npm install failed — many extensions will not load"
     info "You can retry: cd ~/.pi/agent && npm install --production"
     INSTALL_WARNINGS+=("Agent root deps failed — extensions will be broken")
+    
+    # Restore bundled node_modules from backup
+    if [[ -n "$nm_backup" ]] && [[ -d "$nm_backup" ]]; then
+      info "Restoring bundled node_modules from backup..."
+      rm -rf "$PI_AGENT_DIR/node_modules"
+      mv "$nm_backup" "$PI_AGENT_DIR/node_modules"
+      warn "Restored pre-install node_modules — bundled deps should still work"
+    fi
+    
     return 1
   }
+  
+  # Clean up backup on success
+  [[ -n "$nm_backup" ]] && rm -rf "$nm_backup"
+  
   success "Agent dependencies installed"
 }
 
@@ -3120,12 +3230,12 @@ main() {
   detect_update_mode "$@"
 
   # Set TOTAL_STEPS accurately for this run (error-recovery.sh defaults to 0)
-  # Full install: 13 run_step calls. Update mode: 6 run_step calls.
+  # Full install: 14 run_step calls. Update mode: 6 run_step calls.
   if [[ "$UPDATE_MODE" == true ]]; then
     TOTAL_STEPS=6
     CURRENT_STEP=0
   else
-    TOTAL_STEPS=13
+    TOTAL_STEPS=14
     CURRENT_STEP=0
   fi
 
@@ -3159,6 +3269,7 @@ main() {
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites
+    run_step "Network Connectivity" check_network
     run_step "Helios CLI"  install_pi
     run_step "Helios Agent"          setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
     run_step "Helios CLI (symlink)"  install_helios_cli

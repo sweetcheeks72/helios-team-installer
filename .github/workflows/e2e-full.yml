@@ -1,0 +1,135 @@
+# =============================================================================
+# e2e-full.yml — Full E2E tests with Node version matrix + tarball validation
+# =============================================================================
+# Runs the full E2E test suite (tests/e2e_full.sh + tests/e2e_esm_audit.sh)
+# against real release tarballs across Node 18/20/22 on Linux and macOS arm64.
+#
+# ShellCheck is NOT included here — it already runs in shellcheck.yml and test.yml.
+# BATS unit tests are NOT included — they run in test.yml and installer-test.yml.
+# =============================================================================
+
+name: Full E2E Tests
+
+on:
+  pull_request:
+    paths:
+      - 'install.sh'
+      - 'build-release.sh'
+      - 'bootstrap.sh'
+      - 'tests/**'
+      - 'Dockerfile.e2e'
+      - '.github/workflows/e2e-full.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'build-release.sh'
+      - 'bootstrap.sh'
+      - 'tests/**'
+      - 'Dockerfile.e2e'
+      - '.github/workflows/e2e-full.yml'
+
+jobs:
+
+  # ─── Job 1: E2E Tarball on Linux (Node matrix) ─────────────────────────────
+  e2e-tarball:
+    name: E2E Tarball (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Verify Node version
+        run: |
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
+
+      - name: Download latest release tarball
+        run: |
+          mkdir -p dist
+          if gh release download --pattern 'helios-agent-latest.tar.gz' --dir dist 2>/dev/null; then
+            echo "TARBALL_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "Downloaded tarball:"
+            ls -lh dist/helios-agent-latest.tar.gz
+          else
+            echo "TARBALL_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "::warning::No release tarball found — skipping tarball E2E tests"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Run full E2E tests
+        if: env.TARBALL_AVAILABLE == 'true'
+        run: bash tests/e2e_full.sh
+
+      - name: Run ESM audit
+        if: env.TARBALL_AVAILABLE == 'true'
+        run: |
+          # Find the extracted agent dir from e2e_full.sh's temp dir,
+          # or fall back to a fresh extraction
+          AGENT_DIR=$(ls -d /tmp/*/helios-agent-* 2>/dev/null | head -1)
+          if [[ -z "$AGENT_DIR" ]]; then
+            AGENT_DIR=$(mktemp -d)/helios-agent
+            mkdir -p "$AGENT_DIR"
+            tar xzf dist/helios-agent-latest.tar.gz -C "$AGENT_DIR" --strip-components=1
+          fi
+          bash tests/e2e_esm_audit.sh "$AGENT_DIR"
+
+  # ─── Job 2: E2E on macOS arm64 ─────────────────────────────────────────────
+  e2e-macos:
+    name: E2E macOS (arm64)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify architecture
+        run: |
+          echo "Arch: $(uname -m)"
+          echo "Node: $(node --version)"
+          [[ "$(uname -m)" == "arm64" ]] || echo "::warning::Expected arm64, got $(uname -m)"
+
+      - name: Download latest release tarball
+        run: |
+          mkdir -p dist
+          # Try darwin-arm64 tarball first, then generic
+          if gh release download --pattern 'helios-agent-latest-darwin-arm64.tar.gz' --dir dist 2>/dev/null; then
+            echo "TARBALL_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "Downloaded darwin-arm64 tarball"
+          elif gh release download --pattern 'helios-agent-latest.tar.gz' --dir dist 2>/dev/null; then
+            echo "TARBALL_AVAILABLE=true" >> "$GITHUB_ENV"
+            echo "Downloaded generic tarball (darwin-arm64 not available)"
+          else
+            echo "TARBALL_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "::warning::No release tarball found — skipping macOS E2E tests"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Run full E2E tests
+        if: env.TARBALL_AVAILABLE == 'true'
+        run: bash tests/e2e_full.sh
+
+      - name: Run ESM audit
+        if: env.TARBALL_AVAILABLE == 'true'
+        run: |
+          AGENT_DIR=$(ls -d /tmp/*/helios-agent-* 2>/dev/null | head -1)
+          if [[ -z "$AGENT_DIR" ]]; then
+            TARBALL=$(ls dist/helios-agent-latest*.tar.gz | head -1)
+            AGENT_DIR=$(mktemp -d)/helios-agent
+            mkdir -p "$AGENT_DIR"
+            tar xzf "$TARBALL" -C "$AGENT_DIR" --strip-components=1
+          fi
+          bash tests/e2e_esm_audit.sh "$AGENT_DIR"

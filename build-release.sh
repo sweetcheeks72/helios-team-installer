@@ -579,6 +579,113 @@ echo "🔒 Generating SHA256 checksum ..."
 echo "✅ Checksum file created: ${CHECKSUM_PATH}"
 
 # ---------------------------------------------------------------------------
+# Post-build tarball verification
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "🔍 Verifying tarball contents ..."
+
+TARBALL_ROOT="helios-agent-v${VERSION}"
+VERIFY_DIR="${TMPDIR}/verify-${VERSION}"
+mkdir -p "${VERIFY_DIR}"
+
+# Extract tarball into verify dir (trap on EXIT already cleans TMPDIR)
+tar -xzf "${TARBALL_PATH}" -C "${VERIFY_DIR}"
+
+VERIFY_FAIL=0
+
+# ── Critical path checks ────────────────────────────────────────────────────
+CRITICAL_PATHS=(
+  "node_modules/@helios-agent/pi-coding-agent/dist/index.js"
+  "node_modules/@helios-agent/pi-coding-agent/package.json"
+  "node_modules/awilix/package.json"
+  "node_modules/neo4j-driver/package.json"
+  "git/github.com/helios-agi/pi-powerline-footer/index.ts"
+  "package.json"
+  "settings.json"
+  "extensions"
+)
+
+for rel_path in "${CRITICAL_PATHS[@]}"; do
+  full_path="${VERIFY_DIR}/${TARBALL_ROOT}/${rel_path}"
+  if [[ ! -e "${full_path}" ]]; then
+    echo "❌ VERIFY FAIL — missing: ${rel_path}"
+    VERIFY_FAIL=1
+  else
+    echo "  ✓ ${rel_path}"
+  fi
+done
+
+# ── ESM import test ─────────────────────────────────────────────────────────
+PI_INDEX="${VERIFY_DIR}/${TARBALL_ROOT}/node_modules/@helios-agent/pi-coding-agent/dist/index.js"
+if [[ "${VERIFY_FAIL}" -eq 0 ]]; then
+  echo ""
+  echo "  Testing ESM import of pi-coding-agent ..."
+  if node --input-type=module -e "
+    import { pathToFileURL } from 'url';
+    const m = await import(pathToFileURL('${PI_INDEX}'));
+    if (Object.keys(m).length < 10) {
+      process.stderr.write('❌ pi-coding-agent exports too few keys: ' + Object.keys(m).length + '\\n');
+      process.exit(1);
+    }
+    process.stderr.write('  ✓ pi-coding-agent exports ' + Object.keys(m).length + ' keys\\n');
+  " 2>&1; then
+    : # success path — stderr was already printed
+  else
+    echo "❌ VERIFY FAIL — ESM import of pi-coding-agent failed"
+    VERIFY_FAIL=1
+  fi
+fi
+
+# ── helios-agi package count ────────────────────────────────────────────────
+HELIOS_AGI_DIR="${VERIFY_DIR}/${TARBALL_ROOT}/git/github.com/helios-agi"
+if [[ -d "${HELIOS_AGI_DIR}" ]]; then
+  HELIOS_AGI_COUNT=$(find "${HELIOS_AGI_DIR}" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+else
+  HELIOS_AGI_COUNT=0
+fi
+
+if [[ "${HELIOS_AGI_COUNT}" -lt 15 ]]; then
+  echo "❌ VERIFY FAIL — git/github.com/helios-agi/ has only ${HELIOS_AGI_COUNT} packages (need ≥ 15)"
+  VERIFY_FAIL=1
+else
+  echo "  ✓ git/github.com/helios-agi/ packages: ${HELIOS_AGI_COUNT} (≥ 15)"
+fi
+
+# ── node_modules directory count ────────────────────────────────────────────
+NM_DIR="${VERIFY_DIR}/${TARBALL_ROOT}/node_modules"
+if [[ -d "${NM_DIR}" ]]; then
+  NM_COUNT=$(find "${NM_DIR}" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+else
+  NM_COUNT=0
+fi
+
+if [[ "${NM_COUNT}" -lt 100 ]]; then
+  echo "❌ VERIFY FAIL — node_modules/ has only ${NM_COUNT} directories (need ≥ 100)"
+  VERIFY_FAIL=1
+else
+  echo "  ✓ node_modules/ directories: ${NM_COUNT} (≥ 100)"
+fi
+
+# ── Result ──────────────────────────────────────────────────────────────────
+if [[ "${VERIFY_FAIL}" -ne 0 ]]; then
+  echo ""
+  echo "❌ Tarball verification FAILED. Aborting release."
+  rm -rf "${VERIFY_DIR}"
+  exit 1
+fi
+
+echo ""
+echo "\033[0;32m✅ Tarball verification PASSED\033[0m"
+echo "   • Critical paths   : all present"
+echo "   • ESM import       : ok"
+echo "   • helios-agi pkgs  : ${HELIOS_AGI_COUNT}"
+echo "   • node_modules dirs: ${NM_COUNT}"
+
+# Clean up verification dir (TMPDIR EXIT trap is the safety net)
+rm -rf "${VERIFY_DIR}"
+
+# ---------------------------------------------------------------------------
 # Report output
 # ---------------------------------------------------------------------------
 

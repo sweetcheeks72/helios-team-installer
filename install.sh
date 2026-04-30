@@ -359,7 +359,7 @@ npm_install_with_recovery() {
 
   # First attempt
   if run_with_spinner "$label" \
-    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'; then
+    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'; then
     return 0
   fi
 
@@ -388,7 +388,7 @@ npm_install_with_recovery() {
   # Retry
   info "Retrying $label after cache repair..."
   run_with_spinner "$label (retry)" \
-    env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund '$extra_flags' 2>&1'
+    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'
 }
 
 # Verify SHA256 checksum of a file against a checksum file.
@@ -1375,7 +1375,7 @@ install_packages() {
       if [[ -f "${pkg_dir}package.json" ]] && [[ ! -d "${pkg_dir}node_modules" ]]; then
         local pkg_name
         pkg_name="$(basename "$pkg_dir")"
-        run_with_spinner "npm install: $pkg_name" npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
+        run_with_spinner "npm install: $pkg_name" timeout 120 npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
           warn "npm install failed for $pkg_name — may work without it"
         }
       elif [[ -d "${pkg_dir}node_modules" ]]; then
@@ -1584,6 +1584,14 @@ install_agent_deps() {
     fi
   fi
 
+  # Backup bundled node_modules before npm install (restore on failure)
+  local nm_backup=""
+  if [[ -d "$PI_AGENT_DIR/node_modules" ]]; then
+    nm_backup="$PI_AGENT_DIR/node_modules.pre-install-backup"
+    info "Backing up bundled node_modules..."
+    cp -a "$PI_AGENT_DIR/node_modules" "$nm_backup" 2>/dev/null || nm_backup=""
+  fi
+
   # Fallback: full npm install (deps not in tarball or rebuild failed)
   info "Installing agent dependencies via npm (not bundled in tarball)..."
   npm_install_with_recovery "$PI_AGENT_DIR" "npm install (agent root)" || {
@@ -1591,8 +1599,21 @@ install_agent_deps() {
     warn "Agent root npm install failed — many extensions will not load"
     info "You can retry: cd ~/.pi/agent && npm install --production"
     INSTALL_WARNINGS+=("Agent root deps failed — extensions will be broken")
+    
+    # Restore bundled node_modules from backup
+    if [[ -n "$nm_backup" ]] && [[ -d "$nm_backup" ]]; then
+      info "Restoring bundled node_modules from backup..."
+      rm -rf "$PI_AGENT_DIR/node_modules"
+      mv "$nm_backup" "$PI_AGENT_DIR/node_modules"
+      warn "Restored pre-install node_modules — bundled deps should still work"
+    fi
+    
     return 1
   }
+  
+  # Clean up backup on success
+  [[ -n "$nm_backup" ]] && rm -rf "$nm_backup"
+  
   success "Agent dependencies installed"
 }
 

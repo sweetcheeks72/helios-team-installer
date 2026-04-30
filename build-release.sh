@@ -62,6 +62,21 @@ fi
 echo "✅ Version validated: ${VERSION}"
 
 # ---------------------------------------------------------------------------
+# Detect build platform and architecture
+# ---------------------------------------------------------------------------
+
+BUILD_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+BUILD_ARCH="$(uname -m)"
+
+# Normalize arch names
+case "${BUILD_ARCH}" in
+  aarch64) BUILD_ARCH="arm64" ;;
+  x86_64)  BUILD_ARCH="x64" ;;
+esac
+
+echo "✅ Build platform: ${BUILD_OS}-${BUILD_ARCH}"
+
+# ---------------------------------------------------------------------------
 # Validate source directory
 # ---------------------------------------------------------------------------
 
@@ -106,8 +121,8 @@ echo "✅ Output directory ready: ${DIST_DIR}"
 # Set output filenames
 # ---------------------------------------------------------------------------
 
-TARBALL_NAME="helios-agent-v${VERSION}.tar.gz"
-CHECKSUM_NAME="helios-agent-v${VERSION}.tar.gz.sha256"
+TARBALL_NAME="helios-agent-v${VERSION}-${BUILD_OS}-${BUILD_ARCH}.tar.gz"
+CHECKSUM_NAME="helios-agent-v${VERSION}-${BUILD_OS}-${BUILD_ARCH}.tar.gz.sha256"
 TARBALL_PATH="${DIST_DIR}/${TARBALL_NAME}"
 CHECKSUM_PATH="${DIST_DIR}/${CHECKSUM_NAME}"
 
@@ -141,7 +156,6 @@ rsync -a \
   --exclude='*.sock' \
   --exclude='run/' \
   --exclude='.git/' \
-  --exclude='node_modules/' \
   --exclude='.venv/' \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
@@ -463,6 +477,65 @@ if [[ -d "${STAGE_DIR}/packages" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Install production dependencies in staging (self-contained tarball)
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "📦 Installing production dependencies in staging directory..."
+echo "   This makes the tarball self-contained — no npm install needed on target."
+
+# Agent root dependencies (awilix, neo4j-driver, better-sqlite3, etc.)
+if [[ -f "${STAGE_DIR}/package.json" ]]; then
+  echo "  → Agent root: npm install --production ..."
+  (cd "${STAGE_DIR}" && npm install --production --no-audit --no-fund 2>&1 | tail -5) || {
+    echo "❌ FATAL: Agent root npm install failed. Tarball would be broken."
+    exit 1
+  }
+  echo "  ✅ Agent root deps installed"
+fi
+
+# Git package dependencies
+echo "  → Git packages with dependencies..."
+pkg_deps_installed=0
+for pkg_dir in "${STAGE_DIR}/git/github.com/helios-agi"/*/; do
+  if [[ -f "${pkg_dir}/package.json" ]]; then
+    pkg_name="$(basename "$pkg_dir")"
+    dep_count=$(grep -c '"' "${pkg_dir}/package.json" 2>/dev/null || echo "0")
+    if [[ "$dep_count" -gt 0 ]]; then
+      (cd "$pkg_dir" && npm install --production --no-audit --no-fund 2>/dev/null) && {
+        ((pkg_deps_installed++)) || true
+      } || {
+        echo "    ⚠ npm install failed for ${pkg_name} — non-fatal"
+      }
+    fi
+  fi
+done
+echo "  ✅ ${pkg_deps_installed} package dependency trees installed"
+
+# Skill-graph dependencies (has its own package.json with neo4j-driver, tree-sitter)
+if [[ -f "${STAGE_DIR}/skills/skill-graph/package.json" ]]; then
+  echo "  → Skill-graph deps..."
+  (cd "${STAGE_DIR}/skills/skill-graph" && npm install --legacy-peer-deps --no-audit --no-fund 2>/dev/null) || {
+    echo "    ⚠ Skill-graph npm install failed — non-fatal"
+  }
+  echo "  ✅ Skill-graph deps installed"
+fi
+
+# Governance dependencies
+if [[ -f "${STAGE_DIR}/extensions/helios-governance/package.json" ]]; then
+  echo "  → Governance deps..."
+  (cd "${STAGE_DIR}/extensions/helios-governance" && npm install --no-audit --no-fund 2>/dev/null) || {
+    echo "    ⚠ Governance npm install failed — non-fatal"
+  }
+  echo "  ✅ Governance deps installed"
+fi
+
+# Report node_modules size
+TOTAL_NM_SIZE="$(du -sh "${STAGE_DIR}/node_modules" 2>/dev/null | cut -f1 || echo "0")"
+echo ""
+echo "📊 Bundled node_modules size: ${TOTAL_NM_SIZE}"
+
+# ---------------------------------------------------------------------------
 # Create tarball
 # ---------------------------------------------------------------------------
 
@@ -524,17 +597,21 @@ echo ""
 echo "${VERSION}" > "${DIST_DIR}/VERSION"
 echo "  📌 Version  : ${DIST_DIR}/VERSION"
 echo ""
-# Create latest symlink for installer compatibility
+# Create latest copies — both universal name and arch-specific
 cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest.tar.gz"
-# Regenerate checksum for latest copy with correct relative filename
+cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz"
+# Regenerate checksum for latest copies with correct relative filenames
 (
   cd "${DIST_DIR}"
   if command -v sha256sum &>/dev/null; then
     sha256sum "helios-agent-latest.tar.gz" > "helios-agent-latest.tar.gz.sha256"
+    sha256sum "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz" > "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz.sha256"
   elif command -v shasum &>/dev/null; then
     shasum -a 256 "helios-agent-latest.tar.gz" > "helios-agent-latest.tar.gz.sha256"
+    shasum -a 256 "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz" > "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz.sha256"
   fi
 )
 echo "  📎 Latest   : ${DIST_DIR}/helios-agent-latest.tar.gz"
+echo "  📎 Latest (${BUILD_OS}-${BUILD_ARCH}): ${DIST_DIR}/helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz"
 echo ""
 echo "============================================================"

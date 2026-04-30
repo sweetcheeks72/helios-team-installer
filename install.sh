@@ -155,7 +155,18 @@ HELIOS_PRESERVE_FILES=(
 )
 
 HELIOS_RELEASE_URL="https://github.com/helios-agi/helios-team-installer/releases/latest/download"
-HELIOS_AGENT_TARBALL="helios-agent-latest.tar.gz"
+
+# ─── Platform/arch detection for arch-aware tarball selection ─────────────────
+INST_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+INST_ARCH="$(uname -m)"
+case "${INST_ARCH}" in
+  aarch64) INST_ARCH="arm64" ;;
+  x86_64)  INST_ARCH="x64" ;;
+esac
+# Prefer arch-specific tarball; fall back to universal if the arch-specific one
+# is not available on the release server (e.g. older releases pre-multi-arch).
+HELIOS_AGENT_TARBALL="helios-agent-latest-${INST_OS}-${INST_ARCH}.tar.gz"
+HELIOS_AGENT_TARBALL_UNIVERSAL="helios-agent-latest.tar.gz"
 HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/pi-core/releases/download/v0.70.6-helios"
 FAMILIAR_REPO="github.com/helios-agi/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
@@ -795,6 +806,14 @@ setup_helios_agent() {
     curl -fSL --retry 3 --retry-delay 5 --max-time 300 -o "$dest" "$url"
   }
 
+  # ── Resolve arch-specific tarball (fall back to universal if not found) ────
+  if ! curl -fsSI "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
+    info "Arch-specific tarball not found (${HELIOS_AGENT_TARBALL}) — using universal tarball"
+    HELIOS_AGENT_TARBALL="${HELIOS_AGENT_TARBALL_UNIVERSAL}"
+  else
+    info "Using arch-specific tarball: ${HELIOS_AGENT_TARBALL}"
+  fi
+
   # ── Update path: ~/.pi/agent/ exists and has a VERSION file ──────────────
   if [[ -e "$PI_AGENT_DIR" ]] && [[ ! -d "$PI_AGENT_DIR" ]]; then
     warn "~/.pi/agent/ exists but is not a directory — backing up"
@@ -1317,6 +1336,8 @@ install_packages() {
         run_with_spinner "npm install: $pkg_name" npm install --prefix "$pkg_dir" --production 2>>"${LOG_FILE:-/dev/null}" || {
           warn "npm install failed for $pkg_name — may work without it"
         }
+      elif [[ -d "${pkg_dir}node_modules" ]]; then
+        : # node_modules already present from tarball — skip npm install
       fi
     done
 
@@ -1488,28 +1509,51 @@ _apply_provider_config() {
 # @helios-agent/pi-coding-agent, etc.) that extensions import at runtime.
 # Without this step, ~40+ extensions fail with "Cannot find module" errors.
 install_agent_deps() {
-  step "Agent Root Dependencies"
+  step "Agent Dependencies (verify or install)"
 
   if [[ ! -f "$PI_AGENT_DIR/package.json" ]]; then
     info "No package.json in agent dir — skipping"
     return 0
   fi
 
+  # Check if deps were bundled in tarball (self-contained install)
   if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
      [[ -d "$PI_AGENT_DIR/node_modules/neo4j-driver" ]] && \
      [[ -d "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent" ]]; then
-    success "Agent root dependencies already installed"
-    return 0
+
+    # Verify native modules load on this architecture
+    local native_ok=true
+    if [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]]; then
+      node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null || native_ok=false
+    fi
+
+    if [[ "$native_ok" == "true" ]]; then
+      success "Agent deps present from tarball — native modules verified ✓"
+      return 0
+    else
+      info "Deps present but native modules need rebuild for $(uname -m)..."
+      run_with_spinner "Rebuild native modules" \
+        bash -c "cd '$PI_AGENT_DIR' && npm rebuild 2>&1" || {
+        warn "npm rebuild failed — trying full reinstall"
+      }
+      # Re-verify after rebuild
+      if node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null; then
+        success "Native modules rebuilt successfully ✓"
+        return 0
+      fi
+    fi
   fi
 
-  run_with_spinner "Installing agent root dependencies" \
+  # Fallback: full npm install (deps not in tarball or rebuild failed)
+  info "Installing agent dependencies via npm (not bundled in tarball)..."
+  run_with_spinner "npm install (agent root)" \
     bash -c "cd '$PI_AGENT_DIR' && npm install --production --no-audit --no-fund 2>&1" || {
     warn "Agent root npm install failed — many extensions will not load"
     info "You can retry: cd ~/.pi/agent && npm install --production"
     INSTALL_WARNINGS+=("Agent root deps failed — extensions will be broken")
-    return 0
+    return 1
   }
-  success "Agent root dependencies installed"
+  success "Agent dependencies installed"
 }
 
 # ─── Skill-Graph Dependencies ─────────────────────────────────────────────────

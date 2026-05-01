@@ -10,6 +10,15 @@ INSTALLER_VERSION="2.1.0"
 set -euo pipefail
 INSTALL_WARNINGS=()
 
+# install.sh expects the full checked-out repository so it can source lib/*.
+# If someone runs the raw file via `curl .../install.sh | bash`, hand off to
+# the pipe-safe bootstrap entrypoint instead of crashing on BASH_SOURCE/lib paths.
+if [[ -z "${BASH_SOURCE[0]:-}" || ! -f "${BASH_SOURCE[0]:-}" ]]; then
+  echo "install.sh was run from stdin; switching to bootstrap.sh..."
+  curl -fsSL https://raw.githubusercontent.com/helios-agi/helios-team-installer/main/bootstrap.sh | bash -s -- "$@"
+  exit $?
+fi
+
 # ─── Update Recursion Guard ───────────────────────────────────────────────────
 # Prevents install.sh from calling itself recursively (e.g., helios update →
 # install.sh → install_packages → helios update → install.sh).

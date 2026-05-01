@@ -194,6 +194,22 @@ PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
 LOG_FILE="$INSTALLER_DIR/install.log"
 
+LEGACY_PI_DIRS=(
+  extensions
+  lib
+  git
+  prompts
+  skills
+)
+
+LEGACY_MARIO_SCOPE="@mariozechner"
+LEGACY_NPM_PACKAGES=(
+  @helios-agent/pi-coding-agent
+  @helios-agent/cli
+  "${LEGACY_MARIO_SCOPE}/pi-coding-agent"
+  "${LEGACY_MARIO_SCOPE}/pi"
+)
+
 # ─── Migrate settings.json packages from git: (clone) to git/ (local path) ──
 # Tarball bundles packages into ~/.pi/agent/git/..., so settings.json must
 # reference them as local paths (git/github.com/...) not remote sources
@@ -228,6 +244,60 @@ _prune_stale_org_dirs() {
       rm -rf "$PI_AGENT_DIR/git/github.com/$_stale_org"
     fi
   done
+}
+
+# One-pass cleanup for machines that have mixed generations of Pi/Helios.
+# The current tarball loader reads from ~/.pi/agent; legacy top-level ~/.pi/*
+# directories can register duplicate tools and stale dependencies before the
+# new runtime has a chance to win. Quarantine them instead of deleting.
+doctor_legacy_install() {
+  step "Legacy Install Doctor"
+
+  local backup_root="$HOME/.pi-backups/doctor.$(date +%Y%m%d_%H%M%S)"
+  local moved=0
+  local legacy
+
+  mkdir -p "$backup_root"
+
+  for legacy in "${LEGACY_PI_DIRS[@]}"; do
+    if [[ -e "$HOME/.pi/$legacy" ]]; then
+      info "Quarantining legacy ~/.pi/$legacy"
+      mv "$HOME/.pi/$legacy" "$backup_root/$legacy"
+      ((moved++)) || true
+    fi
+  done
+
+  if [[ "$moved" -gt 0 ]]; then
+    success "Legacy ~/.pi paths moved to $backup_root"
+  else
+    rmdir "$backup_root" 2>/dev/null || true
+    success "No legacy top-level ~/.pi paths found"
+  fi
+
+  # Ensure the freshly installed shim directory wins in this process.
+  mkdir -p "$HOME/.local/bin"
+  export PATH="$HOME/.local/bin:$PATH"
+  hash -r 2>/dev/null || true
+
+  # Old global npm packages can hijack `pi`/`helios` and run their own
+  # updater. Remove only known package names, and ignore machines without npm.
+  if command -v npm &>/dev/null; then
+    local installed=()
+    local pkg
+    for pkg in "${LEGACY_NPM_PACKAGES[@]}"; do
+      if npm ls -g "$pkg" --depth=0 >/dev/null 2>&1; then
+        installed+=("$pkg")
+      fi
+    done
+    if [[ "${#installed[@]}" -gt 0 ]]; then
+      info "Removing legacy global npm package(s): ${installed[*]}"
+      npm uninstall -g "${installed[@]}" >/dev/null 2>&1 || \
+        warn "Could not remove every legacy npm package; continuing with ~/.local/bin first in PATH"
+      hash -r 2>/dev/null || true
+    else
+      success "No legacy global Helios packages found"
+    fi
+  fi
 }
 
 # Log to file AND terminal. Best-effort — if tee fails, continue without logging.
@@ -1334,9 +1404,11 @@ install_helios_cli() {
   # Also install to ~/.local/bin
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
+  ln -sfn "$helios_bin" "$HOME/.local/bin/pi"
   if [[ "$system_install" == false ]]; then
     success "helios → ~/.local/bin/helios"
   fi
+  success "pi → ~/.local/bin/pi"
 
   # Add to PATH in shell profile if not already there
   local shell_rc
@@ -1351,9 +1423,21 @@ install_helios_cli() {
   else
     shell_rc="$HOME/.zshrc"
   fi
-  if ! grep -q '\.local/bin' "$shell_rc" 2>/dev/null; then
-    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
-    success "Added ~/.local/bin to PATH in $(basename "$shell_rc")"
+  touch "$shell_rc" 2>/dev/null || true
+  if ! grep -q 'HELIOS PATH' "$shell_rc" 2>/dev/null; then
+    {
+      echo ''
+      echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
+      echo 'export PATH="$HOME/.local/bin:$PATH"'
+    } >> "$shell_rc"
+    success "Added Helios PATH block to $(basename "$shell_rc")"
+  elif ! grep -q 'export PATH="\$HOME/\.local/bin:\$PATH"' "$shell_rc" 2>/dev/null; then
+    {
+      echo ''
+      echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
+      echo 'export PATH="$HOME/.local/bin:$PATH"'
+    } >> "$shell_rc"
+    success "Refreshed Helios PATH block in $(basename "$shell_rc")"
   fi
   export PATH="$HOME/.local/bin:$PATH"
   info "Restart your terminal or run: source $(basename "$shell_rc")"
@@ -2694,6 +2778,21 @@ run_verification() {
     all_ok=false
   fi
 
+  if command -v pi &>/dev/null; then
+    local pi_path
+    pi_path="$(command -v pi)"
+    case "$pi_path" in
+      "$HOME/.local/bin/pi"|/usr/local/bin/pi)
+        success "pi shim found: $pi_path"
+        ;;
+      *)
+        warn "pi resolves to legacy path: $pi_path"
+        warn "Open a new terminal or run: export PATH=\"\$HOME/.local/bin:\$PATH\""
+        INSTALL_WARNINGS+=("Legacy pi command is still ahead of ~/.local/bin in PATH")
+        ;;
+    esac
+  fi
+
   # Agent dir
   if [[ -d "$PI_AGENT_DIR" ]]; then
     success "~/.pi/agent/ exists"
@@ -2701,6 +2800,15 @@ run_verification() {
     error "~/.pi/agent/ not found"
     all_ok=false
   fi
+
+  local legacy_path
+  for legacy_path in "$HOME/.pi/git" "$HOME/.pi/extensions" "$HOME/.pi/lib"; do
+    if [[ -e "$legacy_path" ]]; then
+      warn "Legacy path remains and may cause duplicate loader errors: $legacy_path"
+      INSTALL_WARNINGS+=("Legacy path remains: $legacy_path")
+      all_ok=false
+    fi
+  done
 
   # Count agents
   local agent_count=0
@@ -2786,7 +2894,7 @@ print_quickstart() {
   echo -e "${BOLD}${GREEN}  ✓ Helios Installation Complete!${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
   echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   local helios_ver
-  helios_ver=$(helios --version 2>/dev/null || pi --version 2>/dev/null || echo "unknown")
+  helios_ver=$("$HOME/.local/bin/helios" --version 2>/dev/null || helios --version 2>/dev/null || echo "unknown")
   echo -e "  ${GREEN}${BOLD}Helios ${helios_ver}${RESET} ${DIM}(installer v${INSTALLER_VERSION})${RESET}"
 
   # Ensure PATH is set for remainder of installer + user session
@@ -3239,17 +3347,17 @@ main() {
   detect_update_mode "$@"
 
   # Set TOTAL_STEPS accurately for this run (error-recovery.sh defaults to 0)
-  # Full install: 14 run_step calls. Update mode: 6 run_step calls.
+  # Full install: 15 run_step calls. Update mode: 7 run_step calls.
   if [[ "$UPDATE_MODE" == true ]]; then
-    TOTAL_STEPS=6
+    TOTAL_STEPS=7
     CURRENT_STEP=0
   else
-    TOTAL_STEPS=14
+    TOTAL_STEPS=15
     CURRENT_STEP=0
   fi
 
   if [[ "${FULL_UPDATE:-false}" == true ]]; then
-    TOTAL_STEPS=9
+    TOTAL_STEPS=10
   fi
 
   # ─── Check for --fresh flag (for checkpoint system) ──────────────────────
@@ -3275,6 +3383,8 @@ main() {
       echo ""
     fi
   fi
+
+  run_step "Legacy Install Doctor" doctor_legacy_install
 
   if [[ "$UPDATE_MODE" == false ]]; then
     run_step "Prerequisites"     check_prerequisites

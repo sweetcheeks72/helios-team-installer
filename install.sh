@@ -1709,6 +1709,39 @@ install_agent_deps() {
     return 0
   fi
 
+  _better_sqlite3_ok() {
+    [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]] || return 0
+    node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
+  }
+
+  _repair_better_sqlite3() {
+    info "Repairing better-sqlite3 for Node $(node -p 'process.versions.node' 2>/dev/null || echo unknown)..."
+
+    run_with_spinner "Rebuild better-sqlite3" \
+      bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source 2>&1" || {
+      warn "better-sqlite3 rebuild failed — reinstalling package"
+    }
+
+    if _better_sqlite3_ok; then
+      success "better-sqlite3 rebuilt for current Node ✓"
+      return 0
+    fi
+
+    rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
+    npm_install_with_recovery "$PI_AGENT_DIR" "npm install better-sqlite3" "better-sqlite3" || {
+      warn "better-sqlite3 reinstall failed"
+      return 1
+    }
+
+    if _better_sqlite3_ok; then
+      success "better-sqlite3 reinstalled for current Node ✓"
+      return 0
+    fi
+
+    warn "better-sqlite3 still does not load after repair"
+    return 1
+  }
+
   # CHECK_ONLY mode: report status without installing
   if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
     if [[ -d "$PI_AGENT_DIR/node_modules/awilix" ]] && \
@@ -1726,9 +1759,7 @@ install_agent_deps() {
 
     # Verify native modules load on this architecture
     local native_ok=true
-    if [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]]; then
-      node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null || native_ok=false
-    fi
+    _better_sqlite3_ok || native_ok=false
 
     if [[ "$native_ok" == "true" ]]; then
       # After native modules check passes, also verify ESM import works
@@ -1749,15 +1780,10 @@ install_agent_deps() {
       # ESM import failed — fall through to full npm install
     else
       info "Deps present but native modules need rebuild for $(uname -m)..."
-      run_with_spinner "Rebuild native modules" \
-        bash -c "cd '$PI_AGENT_DIR' && npm rebuild 2>&1" || {
-        warn "npm rebuild failed — trying full reinstall"
-      }
-      # Re-verify after rebuild
-      if node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null; then
-        success "Native modules rebuilt successfully ✓"
+      if _repair_better_sqlite3; then
         return 0
       fi
+      warn "Native module repair failed — trying full dependency reinstall"
     fi
   fi
 
@@ -1795,6 +1821,14 @@ install_agent_deps() {
   
   # Clean up backup on success
   [[ -n "$nm_backup" ]] && rm -rf "$nm_backup"
+
+  if ! _better_sqlite3_ok; then
+    _repair_better_sqlite3 || {
+      fail "better-sqlite3 native module"
+      INSTALL_WARNINGS+=("better-sqlite3 failed — graph cache disabled or unstable")
+      return 1
+    }
+  fi
   
   success "Agent dependencies installed"
 }

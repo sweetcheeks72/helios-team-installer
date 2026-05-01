@@ -178,6 +178,13 @@ PY
   [[ "$body" == *'"$HOME/.local/bin/pi"'* ]]
 }
 
+@test "install_agent_deps repairs better-sqlite3 ABI mismatch" {
+  grep -q '_better_sqlite3_ok()' "$INSTALLER_DIR/install.sh"
+  grep -q '_repair_better_sqlite3()' "$INSTALLER_DIR/install.sh"
+  grep -q 'npm rebuild better-sqlite3 --build-from-source' "$INSTALLER_DIR/install.sh"
+  grep -q 'npm install better-sqlite3' "$INSTALLER_DIR/install.sh"
+}
+
 # ---------------------------------------------------------------------------
 # 6. No tar commands swallow stderr
 # ---------------------------------------------------------------------------

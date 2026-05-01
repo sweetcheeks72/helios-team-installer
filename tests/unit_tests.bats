@@ -142,6 +142,42 @@ if 'interview' not in d:
   [ "$status" -eq 0 ]
 }
 
+@test "installer has legacy install doctor" {
+  grep -q '^doctor_legacy_install()' "$INSTALLER_DIR/install.sh"
+}
+
+@test "legacy doctor quarantines stale top-level pi paths" {
+  local body
+  body=$(sed -n '/^doctor_legacy_install()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  [[ "$body" == *'~/.pi paths moved'* ]]
+  [[ "$body" == *'LEGACY_PI_DIRS'* ]]
+  [[ "$body" == *'mv "$HOME/.pi/$legacy"'* ]]
+}
+
+@test "legacy doctor removes known old global npm packages" {
+  grep -q 'LEGACY_NPM_PACKAGES' "$INSTALLER_DIR/install.sh"
+  grep -q 'npm uninstall -g' "$INSTALLER_DIR/install.sh"
+  grep -q 'LEGACY_MARIO_SCOPE' "$INSTALLER_DIR/install.sh"
+}
+
+@test "main runs legacy doctor before install steps" {
+  python3 - "$INSTALLER_DIR/install.sh" <<'PY'
+import sys
+text = open(sys.argv[1]).read()
+main = text[text.index('main() {'):]
+doctor = main.index('run_step "Legacy Install Doctor" doctor_legacy_install')
+prereq = main.index('run_step "Prerequisites"')
+assert doctor < prereq
+PY
+}
+
+@test "install_helios_cli creates both helios and pi local shims" {
+  local body
+  body=$(sed -n '/^install_helios_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
+  [[ "$body" == *'"$HOME/.local/bin/helios"'* ]]
+  [[ "$body" == *'"$HOME/.local/bin/pi"'* ]]
+}
+
 # ---------------------------------------------------------------------------
 # 6. No tar commands swallow stderr
 # ---------------------------------------------------------------------------
@@ -820,8 +856,8 @@ PYEOF
   grep -q '\-\-full.*FULL_UPDATE=true' "$INSTALLER_DIR/install.sh"
 }
 
-@test "TOTAL_STEPS=9 when FULL_UPDATE" {
-  grep -q 'TOTAL_STEPS=9' "$INSTALLER_DIR/install.sh"
+@test "TOTAL_STEPS=10 when FULL_UPDATE" {
+  grep -q 'TOTAL_STEPS=10' "$INSTALLER_DIR/install.sh"
 }
 
 @test "FULL_UPDATE runs setup_memgraph" {

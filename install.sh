@@ -188,7 +188,7 @@ esac
 # is not available on the release server (e.g. older releases pre-multi-arch).
 HELIOS_AGENT_TARBALL="helios-agent-latest-${INST_OS}-${INST_ARCH}.tar.gz"
 HELIOS_AGENT_TARBALL_UNIVERSAL="helios-agent-latest.tar.gz"
-HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/helios-installer/releases/download/v0.70.6-helios"
+HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/helios-installer/releases/latest/download"
 FAMILIAR_REPO="github.com/helios-agi/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"
@@ -897,38 +897,38 @@ check_network() {
 install_pi() {
   step "Helios CLI (tarball from helios-agi/helios-installer)"
 
-  # Install the underlying Pi CLI binary as 'pi' — NOT 'helios'.
-  # The helios wrapper script (agent/bin/helios, installed by install_helios_cli)
-  # searches for the real binary at /usr/local/bin/pi, /opt/homebrew/bin/pi, etc.
-  # If we install as 'helios', the wrapper overwrites it with a symlink to itself,
-  # creating a self-referencing loop where the real binary is lost.
-  local PI_CLI_BIN="/usr/local/bin/pi"
-  local PI_CLI_FALLBACK_BIN="$HOME/.local/bin/pi"
+  # Architecture:
+  #   /usr/local/bin/helios  = REAL CLI binary (helios-agi fork of pi, from tarball)
+  #   ~/.local/bin/helios    = symlink → wrapper (agent/bin/helios) [created by install_helios_cli]
+  #   ~/.pi/agent/bin/helios = wrapper script (the product — NEVER removed)
+  #
+  # The wrapper's resolve_cli() finds the real binary at /usr/local/bin/helios
+  # because it has a different realpath than the wrapper. PATH order ensures
+  # ~/.local/bin/helios (wrapper) is found first by the shell.
+  #
+  # RULE: Never remove the wrapper. Only install/replace the real CLI binary.
+  local HELIOS_CLI_BIN="/usr/local/bin/helios"
+  local HELIOS_CLI_FALLBACK="$HOME/.helios-cli/helios"
 
-  # ── Check existing installation ──────────────────────────────────────────
-  if command -v helios &>/dev/null; then
-    local pi_ver existing_bin
-    existing_bin="$(command -v helios)"
-    pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-
-    # Validate the existing binary actually works (not a broken symlink or corrupt binary)
-    if [[ -z "$pi_ver" || "$pi_ver" == "unknown" ]]; then
-      warn "Helios CLI found at $existing_bin but appears broken — reinstalling..."
-      # Remove the broken binary so we don't skip install
-      rm -f "$existing_bin" 2>/dev/null || sudo rm -f "$existing_bin" 2>/dev/null || true
-    else
-      # Also check the underlying 'pi' binary exists (the wrapper needs it)
-      if command -v pi &>/dev/null; then
-        success "Helios CLI already installed: $pi_ver ($existing_bin)"
-        PI_INSTALLED=true
-        return 0
-      else
-        warn "Helios wrapper found but underlying 'pi' binary missing — reinstalling..."
-      fi
+  # ── Check if the real CLI binary (not the wrapper) already exists ─────────
+  local real_cli=""
+  for loc in "$HELIOS_CLI_BIN" "$HELIOS_CLI_FALLBACK" /opt/homebrew/bin/helios; do
+    # Must be a real file (not a symlink to wrapper) and must execute
+    if [[ -f "$loc" && ! -L "$loc" ]] && "$loc" --version &>/dev/null; then
+      real_cli="$loc"
+      break
     fi
+  done
+
+  if [[ -n "$real_cli" ]]; then
+    local cli_ver
+    cli_ver=$("$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+    success "Helios CLI binary already installed: $cli_ver ($real_cli)"
+    PI_INSTALLED=true
+    return 0
   fi
 
-  info "Helios CLI not found — installing from tarball..."
+  info "Helios CLI binary not found — installing from tarball..."
 
   # ── Detect platform ──────────────────────────────────────────────────────
   local os_name arch platform_tarball
@@ -956,7 +956,7 @@ install_pi() {
       ;;
   esac
 
-  # ── Check disk space (need ~100MB for download + extraction) ─────────────
+  # ── Check disk space (≥100MB for download + extraction) ──────────────────
   local available_mb
   if command -v df &>/dev/null; then
     available_mb=$(df -m /tmp 2>/dev/null | awk 'NR==2 {print $4}')
@@ -965,6 +965,11 @@ install_pi() {
       echo -e "  ${BOLD}Fix:${RESET} Free up disk space and re-run the installer."
       return 1
     fi
+  fi
+
+  # ── Proxy detection ──────────────────────────────────────────────────────
+  if [[ -n "${HTTPS_PROXY:-}${https_proxy:-}${HTTP_PROXY:-}${http_proxy:-}" ]]; then
+    info "Proxy detected: ${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}"
   fi
 
   # ── Download with multi-source fallback ──────────────────────────────────
@@ -986,8 +991,7 @@ install_pi() {
     warn "Primary download failed (HTTP $http_code) — trying fallback..."
   fi
 
-  # Strategy 2: Fallback to helios-team-installer releases (agent tarball repo)
-  # The CLI might also be published here in future releases
+  # Strategy 2: Fallback to helios-team-installer releases
   if [[ "$download_ok" != true ]]; then
     local fallback_url="${HELIOS_RELEASE_URL}/${platform_tarball}"
     if curl -fsSL --retry 2 --retry-delay 3 --max-time 120 \
@@ -999,12 +1003,10 @@ install_pi() {
     fi
   fi
 
-  # Strategy 3: gh release download (if user happens to have repo access)
+  # Strategy 3: gh release download (if user has repo access)
   if [[ "$download_ok" != true ]] && command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    local release_tag="${HELIOS_CLI_RELEASE_URL##*/}"
     info "Trying gh CLI download (authenticated)..."
-    if gh release download "$release_tag" \
-         --repo helios-agi/helios-installer \
+    if gh release download --repo helios-agi/helios-installer \
          --pattern "$platform_tarball" \
          --dir "$tmp_dir" >> "$LOG_FILE" 2>&1; then
       mv "$tmp_dir/$platform_tarball" "$tmp_dir/cli.tar.gz" 2>/dev/null
@@ -1019,28 +1021,28 @@ install_pi() {
     echo -e "    1. ${tarball_url}"
     echo -e "    2. ${HELIOS_RELEASE_URL}/${platform_tarball}"
     echo -e "    3. gh release download (if available)"
-    echo -e ""
+    if [[ -n "${HTTPS_PROXY:-}${https_proxy:-}" ]]; then
+      echo -e "  ${BOLD}Note:${RESET} Proxy detected — set CURL_CA_BUNDLE if using custom CA."
+    fi
     echo -e "  ${BOLD}Manual fix:${RESET}"
     echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
     echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp"
-    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/pi && sudo chmod +x /usr/local/bin/pi"
+    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/helios && sudo chmod +x /usr/local/bin/helios"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
   # ── Validate download ────────────────────────────────────────────────────
-  # Check file exists and has reasonable size (> 1MB for a CLI binary tarball)
   local tarball_size
   tarball_size=$(wc -c < "$tmp_dir/cli.tar.gz" 2>/dev/null || echo "0")
   if [[ "$tarball_size" -lt 1048576 ]]; then
-    error "Downloaded tarball is suspiciously small (${tarball_size} bytes) — likely corrupt or an error page"
-    # Log first 200 chars to help diagnose (might be an HTML error page)
+    error "Downloaded tarball is suspiciously small (${tarball_size} bytes) — likely corrupt or error page"
     head -c 200 "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>/dev/null
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
-  # Validate it's actually a gzip file (magic bytes: 1f 8b)
+  # Validate gzip magic bytes (1f 8b)
   local magic
   magic=$(xxd -p -l 2 "$tmp_dir/cli.tar.gz" 2>/dev/null || od -A n -t x1 -N 2 "$tmp_dir/cli.tar.gz" 2>/dev/null | tr -d ' ')
   if [[ "$magic" != "1f8b" ]]; then
@@ -1051,18 +1053,32 @@ install_pi() {
     return 1
   fi
 
+  # ── SHA256 checksum verification ─────────────────────────────────────────
+  local checksum_url="${tarball_url}.sha256"
+  local tmp_checksum
+  tmp_checksum="$(mktemp)"
+  if curl -fsSL --max-time 30 "$checksum_url" -o "$tmp_checksum" 2>/dev/null; then
+    if ! _verify_sha256 "$tmp_dir/cli.tar.gz" "$tmp_checksum"; then
+      error "SHA256 checksum mismatch — tarball may be corrupt or tampered with"
+      rm -f "$tmp_checksum"
+      rm -rf "$tmp_dir" 2>/dev/null
+      return 1
+    fi
+    info "SHA256 checksum verified"
+  else
+    info "No checksum file available — skipping verification"
+  fi
+  rm -f "$tmp_checksum"
+
   # ── Extract tarball ──────────────────────────────────────────────────────
   if ! tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1; then
     error "Failed to extract tarball — file may be corrupt"
-    echo -e "  ${BOLD}Fix:${RESET} Re-run the installer. If this persists, download manually:"
-    echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
   # ── Locate the binary (handle varying tarball structures) ────────────────
   local pi_binary=""
-  # Check common paths where the binary might be
   for candidate in \
     "$tmp_dir/pi/pi" \
     "$tmp_dir/pi/helios" \
@@ -1073,142 +1089,115 @@ install_pi() {
       break
     fi
   done
-
-  # Fallback: search for any executable that looks like the CLI
   if [[ -z "$pi_binary" ]]; then
     pi_binary=$(find "$tmp_dir" -name "pi" -type f ! -name "*.gz" ! -name "*.json" 2>/dev/null | head -1)
   fi
-
   if [[ -z "$pi_binary" || ! -f "$pi_binary" ]]; then
     error "Tarball extracted but CLI binary not found"
-    echo -e "  Tarball contents:"
     find "$tmp_dir" -type f | head -20 | sed 's/^/    /' | tee -a "$LOG_FILE"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
-
   chmod +x "$pi_binary"
 
-  # ── Verify binary actually runs ──────────────────────────────────────────
+  # ── Verify binary runs ──────────────────────────────────────────────────
   if ! "$pi_binary" --version &>/dev/null; then
-    # Might be a architecture mismatch (e.g. x64 binary on ARM)
     local bin_arch
     bin_arch=$(file "$pi_binary" 2>/dev/null || echo "unknown")
     error "CLI binary exists but won't execute"
     echo -e "  Binary: $bin_arch"
-    echo -e "  System: $(uname -m)"
-    echo -e "  This may be an architecture mismatch."
+    echo -e "  System: $(uname -m) — possible architecture mismatch"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
-
   local installed_ver
   installed_ver=$("$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
-  # ── Install binary as 'pi' (try multiple locations) ──────────────────────
+  # ── Install as /usr/local/bin/helios (the real CLI binary) ───────────────
+  # The wrapper at ~/.local/bin/helios finds this via resolve_cli().
+  # We install as 'helios' because this IS the helios-agi fork.
   local install_target=""
 
-  # Remove any stale 'pi' at target locations (might be old npm symlink)
-  for stale in "$PI_CLI_BIN" "$PI_CLI_FALLBACK_BIN"; do
-    if [[ -L "$stale" ]]; then
-      # It's a symlink (probably from old npm install) — remove it
-      rm -f "$stale" 2>/dev/null || sudo rm -f "$stale" 2>/dev/null || true
-    fi
-  done
+  # Ensure /usr/local/bin exists (doesn't on fresh macOS Apple Silicon)
+  if [[ ! -d "/usr/local/bin" ]]; then
+    sudo -n mkdir -p /usr/local/bin 2>/dev/null && \
+      sudo chmod 755 /usr/local/bin 2>/dev/null || true
+  fi
 
-  # Try /usr/local/bin first (standard system-wide location)
   if [[ -d "/usr/local/bin" ]]; then
+    # If a wrapper symlink exists here, remove it (install_helios_cli may have put one)
+    [[ -L "$HELIOS_CLI_BIN" ]] && { rm -f "$HELIOS_CLI_BIN" 2>/dev/null || sudo rm -f "$HELIOS_CLI_BIN" 2>/dev/null || true; }
     if [[ -w "/usr/local/bin" ]]; then
-      cp "$pi_binary" "$PI_CLI_BIN"
-      chmod +x "$PI_CLI_BIN"
-      install_target="$PI_CLI_BIN"
-    elif sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
-      sudo cp "$pi_binary" "$PI_CLI_BIN"
-      sudo chmod +x "$PI_CLI_BIN"
-      install_target="$PI_CLI_BIN"
+      cp "$pi_binary" "$HELIOS_CLI_BIN"
+      chmod +x "$HELIOS_CLI_BIN"
+      install_target="$HELIOS_CLI_BIN"
+    elif sudo -n true 2>/dev/null; then
+      sudo cp "$pi_binary" "$HELIOS_CLI_BIN"
+      sudo chmod +x "$HELIOS_CLI_BIN"
+      install_target="$HELIOS_CLI_BIN"
     fi
   fi
 
-  # Fallback: ~/.local/bin (no sudo needed)
+  # Fallback: ~/.helios-cli/helios (no sudo needed, wrapper can find it)
   if [[ -z "$install_target" ]]; then
-    mkdir -p "$(dirname "$PI_CLI_FALLBACK_BIN")"
-    cp "$pi_binary" "$PI_CLI_FALLBACK_BIN"
-    chmod +x "$PI_CLI_FALLBACK_BIN"
-    install_target="$PI_CLI_FALLBACK_BIN"
-    warn "Could not install to /usr/local/bin (no write access) — installed to $PI_CLI_FALLBACK_BIN"
-    # Ensure ~/.local/bin is in PATH
-    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
-      echo -e "  ${BOLD}Note:${RESET} Add to your shell profile: ${CYAN}export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}"
-    fi
+    mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK")"
+    cp "$pi_binary" "$HELIOS_CLI_FALLBACK"
+    chmod +x "$HELIOS_CLI_FALLBACK"
+    install_target="$HELIOS_CLI_FALLBACK"
+    warn "Could not install to /usr/local/bin — installed to $HELIOS_CLI_FALLBACK"
   fi
 
-  # Also create a 'helios' copy/link at the same location as a convenience
-  # (install_helios_cli will later replace this with the wrapper, which is correct)
-  local helios_target="$(dirname "$install_target")/helios"
-  if [[ ! -e "$helios_target" ]]; then
-    cp "$pi_binary" "$helios_target" 2>/dev/null || \
-      sudo cp "$pi_binary" "$helios_target" 2>/dev/null || true
-    chmod +x "$helios_target" 2>/dev/null || sudo chmod +x "$helios_target" 2>/dev/null || true
+  # Remove macOS quarantine attribute
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr &>/dev/null; then
+    xattr -d com.apple.quarantine "$install_target" 2>/dev/null || true
   fi
 
-  # ── Cleanup temp dir ────────────────────────────────────────────────────────
   rm -rf "$tmp_dir" 2>/dev/null
-
-  # ── Final verification: confirm the installed binary is reachable ────────
-  # Re-hash to pick up newly installed binary
   hash -r 2>/dev/null || true
-
-  if command -v pi &>/dev/null; then
-    PI_INSTALLED=true
-    success "Pi CLI $installed_ver installed at $install_target"
-  elif command -v helios &>/dev/null; then
-    PI_INSTALLED=true
-    success "Helios CLI $installed_ver installed at $helios_target"
-  else
-    # Binary installed but not on PATH yet (will be after shell restart)
-    PI_INSTALLED=true
-    success "Pi CLI $installed_ver installed at $install_target (restart shell to use)"
-  fi
+  PI_INSTALLED=true
+  success "Helios CLI $installed_ver installed at $install_target"
 }
 
 # ─── Pi CLI Update ────────────────────────────────────────────────────────────
 update_pi_cli() {
-  step "Pi CLI"
+  step "Helios CLI Update"
 
-  if ! command -v helios &>/dev/null && ! command -v pi &>/dev/null; then
-    warn "Pi CLI not found — installing..."
+  # Find the real CLI binary (not the wrapper)
+  local real_cli=""
+  for loc in /usr/local/bin/helios "$HOME/.helios-cli/helios" /opt/homebrew/bin/helios; do
+    if [[ -f "$loc" && ! -L "$loc" ]]; then
+      real_cli="$loc"
+      break
+    fi
+  done
+
+  if [[ -z "$real_cli" ]]; then
+    warn "Helios CLI binary not found — installing..."
     install_pi
     return
   fi
 
   local current_ver
-  current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  current_ver=$("$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
-  info "Reinstalling Pi CLI from tarball (current: $current_ver)..."
-  # Force reinstall by temporarily removing the existing 'pi' binary
-  # (the 'helios' wrapper symlink can stay — it delegates to 'pi')
-  local existing_pi_bin
-  existing_pi_bin="$(command -v pi 2>/dev/null || echo "")"
-  local backup=""
-  if [[ -n "$existing_pi_bin" && -f "$existing_pi_bin" && ! -L "$existing_pi_bin" ]]; then
-    # Only backup if it's a real file (not a symlink to wrapper)
-    backup="${existing_pi_bin}.backup-$(date +%s)"
-    cp "$existing_pi_bin" "$backup" 2>/dev/null || sudo cp "$existing_pi_bin" "$backup" 2>/dev/null || true
-    rm -f "$existing_pi_bin" 2>/dev/null || sudo rm -f "$existing_pi_bin" 2>/dev/null || true
-    hash -r 2>/dev/null || true
-  fi
+  info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
+
+  # Backup the real binary, remove it so install_pi sees it as missing
+  local backup="${real_cli}.backup-$(date +%s)"
+  cp "$real_cli" "$backup" 2>/dev/null || sudo cp "$real_cli" "$backup" 2>/dev/null || true
+  rm -f "$real_cli" 2>/dev/null || sudo rm -f "$real_cli" 2>/dev/null || true
+  hash -r 2>/dev/null || true
 
   if ! install_pi; then
-    # Restore backup if install failed
-    if [[ -n "$backup" && -f "$backup" ]]; then
-      mv "$backup" "$existing_pi_bin" 2>/dev/null || sudo mv "$backup" "$existing_pi_bin" 2>/dev/null || true
-      warn "Install failed — restored previous Pi CLI version"
+    # Restore backup on failure
+    if [[ -f "$backup" ]]; then
+      mv "$backup" "$real_cli" 2>/dev/null || sudo mv "$backup" "$real_cli" 2>/dev/null || true
+      warn "Install failed — restored previous Helios CLI version"
     fi
     return 1
   fi
 
-  # Clean up backup
-  rm -f "${backup:-}" 2>/dev/null || sudo rm -f "${backup:-}" 2>/dev/null || true
+  rm -f "$backup" 2>/dev/null || sudo rm -f "$backup" 2>/dev/null || true
 }
 
 # ─── Helios Agent (Tarball) ───────────────────────────────────────────────────
@@ -1634,66 +1623,42 @@ rollback_update() {
 
 # ─── Helios CLI Command ──────────────────────────────────────────────────────
 install_helios_cli() {
-  step "Helios CLI (symlink)"
+  step "Helios CLI (wrapper)"
 
   local helios_bin="$PI_AGENT_DIR/bin/helios"
   if [[ ! -f "$helios_bin" ]]; then
-    info "bin/helios not found in agent repo — skipping CLI install"
+    info "bin/helios not found in agent repo — skipping wrapper setup"
     return 0
   fi
 
   chmod +x "$helios_bin"
 
-  # Verify the underlying 'pi' binary exists before we replace /usr/local/bin/helios
-  # with the wrapper (which delegates to 'pi'). If 'pi' doesn't exist, the wrapper
-  # would be broken.
-  if ! command -v pi &>/dev/null; then
-    # Check common locations directly
-    local pi_found=false
-    for pi_loc in /usr/local/bin/pi /opt/homebrew/bin/pi "$HOME/.local/bin/pi"; do
-      if [[ -x "$pi_loc" ]] && [[ ! -L "$pi_loc" || -e "$pi_loc" ]]; then
-        pi_found=true
-        break
-      fi
-    done
-    if [[ "$pi_found" == false ]]; then
-      warn "Underlying 'pi' binary not found — wrapper would be broken without it"
-      info "Running install_pi to ensure the Pi CLI binary is available..."
-      install_pi || {
-        warn "Could not install Pi CLI binary — skipping wrapper symlink"
-        return 0
-      }
+  # Verify the real CLI binary exists. The wrapper delegates to it via resolve_cli().
+  # If the real binary is missing, install it first.
+  local real_cli_found=false
+  for loc in /usr/local/bin/helios "$HOME/.helios-cli/helios" /opt/homebrew/bin/helios; do
+    if [[ -f "$loc" && ! -L "$loc" ]]; then
+      real_cli_found=true
+      break
     fi
+  done
+  if [[ "$real_cli_found" == false ]]; then
+    warn "Helios CLI binary not found — the wrapper needs it to function"
+    info "Installing Helios CLI binary..."
+    install_pi || {
+      warn "Could not install CLI binary — wrapper will fall back to npx"
+    }
   fi
 
-  local system_install=false
-
-  # Try /usr/local/bin first
-  if [[ -w /usr/local/bin ]]; then
-    ln -sfn "$helios_bin" /usr/local/bin/helios
-    success "helios → /usr/local/bin/helios"
-    system_install=true
-  elif sudo -n true 2>/dev/null; then
-    sudo ln -sfn "$helios_bin" /usr/local/bin/helios
-    success "helios → /usr/local/bin/helios"
-    system_install=true
-  fi
-
-  # Also install to ~/.local/bin
+  # ── Install wrapper symlinks to ~/.local/bin ─────────────────────────────
+  # IMPORTANT: Do NOT symlink the wrapper to /usr/local/bin/helios — that's
+  # where the real CLI binary lives. The wrapper goes to ~/.local/bin which
+  # has PATH priority, so 'helios' resolves to wrapper first.
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
-  # Only symlink pi → wrapper if ~/.local/bin/pi isn't the REAL binary.
-  # On no-sudo machines, install_pi places the real binary at ~/.local/bin/pi
-  # and we must NOT overwrite it with the wrapper symlink.
-  if [[ -L "$HOME/.local/bin/pi" || ! -f "$HOME/.local/bin/pi" ]]; then
-    ln -sfn "$helios_bin" "$HOME/.local/bin/pi"
-    success "pi → ~/.local/bin/pi (wrapper)"
-  else
-    info "~/.local/bin/pi is the real Pi CLI binary — keeping it"
-  fi
-  if [[ "$system_install" == false ]]; then
-    success "helios → ~/.local/bin/helios"
-  fi
+  ln -sfn "$helios_bin" "$HOME/.local/bin/pi"
+  success "helios → ~/.local/bin/helios (wrapper)"
+  success "pi → ~/.local/bin/pi (wrapper alias)"
 
   # Add to PATH in shell profile if not already there
   local shell_rc
@@ -1716,33 +1681,23 @@ install_helios_cli() {
       echo 'export PATH="$HOME/.local/bin:$PATH"'
     } >> "$shell_rc"
     success "Added Helios PATH block to $(basename "$shell_rc")"
-  elif ! grep -q 'export PATH="\$HOME/\.local/bin:\$PATH"' "$shell_rc" 2>/dev/null; then
-    {
-      echo ''
-      echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
-      echo 'export PATH="$HOME/.local/bin:$PATH"'
-    } >> "$shell_rc"
-    success "Refreshed Helios PATH block in $(basename "$shell_rc")"
   fi
   export PATH="$HOME/.local/bin:$PATH"
   info "Restart your terminal or run: source $(basename "$shell_rc")"
-
 
   # Also symlink fd if present and not already in PATH
   local fd_bin="$PI_AGENT_DIR/bin/fd"
   if [[ -f "$fd_bin" ]] && ! command -v fd &>/dev/null; then
     chmod +x "$fd_bin"
-    if [[ -w /usr/local/bin ]]; then
-      ln -sfn "$fd_bin" /usr/local/bin/fd
-      success "fd → /usr/local/bin/fd"
-    elif [[ -d "$HOME/.local/bin" ]]; then
+    if [[ -d "$HOME/.local/bin" ]]; then
       ln -sfn "$fd_bin" "$HOME/.local/bin/fd"
       success "fd → ~/.local/bin/fd"
     fi
   fi
 
-  success "Type 'helios' to launch (branded pi wrapper)"
+  success "Type 'helios' to launch"
 }
+
 
 # ─── Pi Update (Install Packages) ─────────────────────────────────────────────
 install_packages() {

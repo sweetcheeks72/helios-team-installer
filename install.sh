@@ -810,25 +810,6 @@ check_prerequisites() {
     retry_with_backoff 3 2 npm install -g pnpm >> "$LOG_FILE" 2>&1 && success "pnpm installed" || warn "pnpm install failed — not critical"
   fi
 
-  # ── GitHub CLI (gh) ─────────────────────────────────────────────────────────
-  # Required for authenticated downloads from private helios-agi repos.
-  if _install_dep gh gh gh; then
-    success "gh $(gh --version 2>/dev/null | head -1 | awk '{print $4}')"
-    # Check auth status — prompt to login if not authenticated
-    if ! gh auth status &>/dev/null 2>&1; then
-      warn "GitHub CLI not authenticated — required for Helios CLI download"
-      ask "Run 'gh auth login' now? [Y/n]:"
-      read -r ghauth_reply
-      if [[ "${ghauth_reply:-Y}" =~ ^[Yy] ]]; then
-        gh auth login || warn "GitHub auth failed — CLI download may fail"
-      else
-        warn "Skipping gh auth — CLI download from private repo will likely fail"
-      fi
-    fi
-  else
-    warn "gh CLI not available — install with: brew install gh"
-  fi
-
   # ── Docker / OrbStack ───────────────────────────────────────────────────────
   if command -v docker &>/dev/null; then
     if docker info &>/dev/null 2>&1; then
@@ -951,44 +932,10 @@ install_pi() {
   esac
 
   local tarball_url="${HELIOS_CLI_RELEASE_URL}/${platform_tarball}"
-  local release_tag="${HELIOS_CLI_RELEASE_URL##*/}"  # e.g. v0.70.6-helios
   local tmp_dir
   tmp_dir=$(mktemp -d)
 
-  local download_ok=false
-
-  # Strategy 1: gh release download (handles private repo auth automatically)
-  if command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
-    info "Downloading via GitHub CLI (authenticated)..."
-    if gh release download "$release_tag" \
-         --repo helios-agi/pi-core \
-         --pattern "$platform_tarball" \
-         --dir "$tmp_dir" >> "$LOG_FILE" 2>&1; then
-      mv "$tmp_dir/$platform_tarball" "$tmp_dir/cli.tar.gz"
-      download_ok=true
-    else
-      warn "gh release download failed — falling back to curl"
-    fi
-  fi
-
-  # Strategy 2: curl with GH_TOKEN / GITHUB_TOKEN auth header (if token available)
-  if [[ "$download_ok" != true ]]; then
-    local auth_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-    local auth_header=()
-    if [[ -n "$auth_token" ]]; then
-      auth_header=(-H "Authorization: token $auth_token")
-      # Private repo assets need the Accept header + API redirect
-      info "Downloading via curl (token-authenticated)..."
-    fi
-    if curl -fsSL --retry 3 --retry-delay 5 --max-time 60 \
-         "${auth_header[@]}" \
-         -H "Accept: application/octet-stream" \
-         "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
-      download_ok=true
-    fi
-  fi
-
-  if [[ "$download_ok" == true ]]; then
+  if curl -fsSL --retry 3 --retry-delay 5 --max-time 60 "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
     tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1
     if [[ -f "$tmp_dir/pi/pi" ]]; then
       # Install binary
@@ -1008,9 +955,8 @@ install_pi() {
     fi
   else
     error "Failed to download Helios CLI from $tarball_url"
-    echo -e "  ${BOLD}This is a private repo — authentication required.${RESET}"
-    echo -e "  ${BOLD}Fix:${RESET} Run ${CYAN}gh auth login${RESET} first, then re-run the installer."
-    echo -e "  If gh CLI is not installed: ${CYAN}brew install gh && gh auth login${RESET}"
+    echo -e "  ${BOLD}Manual fix:${RESET}"
+    echo -e "    Download from: ${HELIOS_CLI_RELEASE_URL}"
     rm -rf "$tmp_dir"
     return 1
   fi

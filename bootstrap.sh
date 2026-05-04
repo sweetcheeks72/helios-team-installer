@@ -233,7 +233,9 @@ fi
 if [[ "$node_ok" == false ]]; then
   echo -e "  ${CYAN}⬇${RESET}  Installing Node.js..."
   if [[ "$PLATFORM" == "Darwin" ]] && command -v brew &>/dev/null; then
-    brew install node 2>&1
+    # Pin to Node 22 LTS — tarball native modules require Node 22
+    brew install node@22 2>&1
+    brew link --overwrite node@22 2>&1 || true
   elif command -v apt-get &>/dev/null; then
     if command -v curl &>/dev/null; then
       NODE_SETUP="/tmp/nodesource_setup_22.x.sh"

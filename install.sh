@@ -1118,38 +1118,30 @@ install_pi() {
   local installed_ver
   installed_ver=$("$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
-  # ── Install as /usr/local/bin/helios (the real CLI binary) ───────────────
-  # The wrapper at ~/.local/bin/helios finds this via resolve_cli().
-  # We install as 'helios' because this IS the helios-agi fork.
+  # ── Install the real CLI binary ──────────────────────────────────────────
+  # PRIMARY: ~/.helios-cli/helios (survives macOS upgrades — Tahoe 26 wipes /usr/local)
+  # SECONDARY: /usr/local/bin/helios (convenience, on PATH by default)
+  # The wrapper's resolve_cli() checks both locations.
   local install_target=""
 
-  # Ensure /usr/local/bin exists (doesn't on fresh macOS Apple Silicon)
+  # Always install to ~/.helios-cli/ (durable, no sudo, survives OS upgrades)
+  mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK")"
+  cp "$pi_binary" "$HELIOS_CLI_FALLBACK"
+  chmod +x "$HELIOS_CLI_FALLBACK"
+  install_target="$HELIOS_CLI_FALLBACK"
+
+  # Also install to /usr/local/bin as convenience (may be wiped by macOS upgrades)
   if [[ ! -d "/usr/local/bin" ]]; then
     sudo -n mkdir -p /usr/local/bin 2>/dev/null && \
       sudo chmod 755 /usr/local/bin 2>/dev/null || true
   fi
-
   if [[ -d "/usr/local/bin" ]]; then
-    # If a wrapper symlink exists here, remove it (install_helios_cli may have put one)
     [[ -L "$HELIOS_CLI_BIN" ]] && { rm -f "$HELIOS_CLI_BIN" 2>/dev/null || sudo rm -f "$HELIOS_CLI_BIN" 2>/dev/null || true; }
     if [[ -w "/usr/local/bin" ]]; then
-      cp "$pi_binary" "$HELIOS_CLI_BIN"
-      chmod +x "$HELIOS_CLI_BIN"
-      install_target="$HELIOS_CLI_BIN"
+      cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
     elif sudo -n true 2>/dev/null; then
-      sudo cp "$pi_binary" "$HELIOS_CLI_BIN"
-      sudo chmod +x "$HELIOS_CLI_BIN"
-      install_target="$HELIOS_CLI_BIN"
+      sudo cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && sudo chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
     fi
-  fi
-
-  # Fallback: ~/.helios-cli/helios (no sudo needed, wrapper can find it)
-  if [[ -z "$install_target" ]]; then
-    mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK")"
-    cp "$pi_binary" "$HELIOS_CLI_FALLBACK"
-    chmod +x "$HELIOS_CLI_FALLBACK"
-    install_target="$HELIOS_CLI_FALLBACK"
-    warn "Could not install to /usr/local/bin — installed to $HELIOS_CLI_FALLBACK"
   fi
 
   # Remove macOS quarantine attribute

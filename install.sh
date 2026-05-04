@@ -3668,6 +3668,25 @@ main() {
     TOTAL_STEPS=10
   fi
 
+  # ─── Hotfix: patch known wrapper bugs ──────────────────────────────────────
+  # The wrapper at ~/.pi/agent/bin/helios ships via tarball and may have known
+  # bugs. Patch them in-place so the wrapper works after this update completes.
+  # This is idempotent — safe to run on already-fixed wrappers.
+  local _wrapper="$PI_AGENT_DIR/bin/helios"
+  if [[ -f "$_wrapper" ]]; then
+    # Fix: 'local' outside function crashes bash 4.x (line ~84)
+    if grep -q 'local depth="\${_HELIOS_UPDATE_DEPTH' "$_wrapper" 2>/dev/null; then
+      sed -i.hotfix 's/local depth="${_HELIOS_UPDATE_DEPTH/depth="${_HELIOS_UPDATE_DEPTH/' "$_wrapper"
+      rm -f "${_wrapper}.hotfix" 2>/dev/null
+      info "Patched wrapper: removed 'local' outside function"
+    fi
+    # Fix: stale npm error messages
+    if grep -q 'npm install -g @helios-agent/cli' "$_wrapper" 2>/dev/null; then
+      sed -i.hotfix 's|npm install -g @helios-agent/cli|cd ~/helios-team-installer \&\& bash install.sh|g' "$_wrapper"
+      rm -f "${_wrapper}.hotfix" 2>/dev/null
+    fi
+  fi
+
   # ─── Check for --fresh flag (for checkpoint system) ──────────────────────
   FRESH_INSTALL=false
   for _arg in "$@"; do

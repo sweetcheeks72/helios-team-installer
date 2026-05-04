@@ -1158,7 +1158,7 @@ install_pi() {
   success "Helios CLI $installed_ver installed at $install_target"
 }
 
-# ─── Pi CLI Update ────────────────────────────────────────────────────────────
+# ─── Helios CLI Update ────────────────────────────────────────────────────────────
 update_pi_cli() {
   step "Helios CLI Update"
 
@@ -1520,9 +1520,9 @@ verify_update() {
   # Check 1: helios --version responds and returns a version string
   local pi_ver
   if pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
-    success "Pi CLI responds: $pi_ver"
+    success "Helios CLI responds: $pi_ver"
   else
-    error "Pi CLI check failed — cannot get version"
+    error "Helios CLI check failed — cannot get version"
     all_pass=false
   fi
 
@@ -1597,20 +1597,20 @@ rollback_update() {
     fi
   fi
 
-  # Roll back Pi CLI if version differs
+  # Roll back Helios CLI if version differs
   if [[ "$saved_pi_version" != "unknown" ]]; then
     local current_ver
     current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
     if [[ "$current_ver" != "$saved_pi_version" ]]; then
-      info "Rolling back Pi CLI: $current_ver → $saved_pi_version"
+      info "Rolling back Helios CLI: $current_ver → $saved_pi_version"
       if npm install -g "@helios-agent/cli@${saved_pi_version}" 2>/dev/null; then
-        success "Pi CLI rolled back to $saved_pi_version"
+        success "Helios CLI rolled back to $saved_pi_version"
         rolled_back=true
       else
-        error "Pi CLI rollback failed — manual fix: npm install -g @helios-agent/cli@${saved_pi_version}"
+        error "Helios CLI rollback failed — manual fix: npm install -g @helios-agent/cli@${saved_pi_version}"
       fi
     else
-      info "Pi CLI version unchanged — no rollback needed"
+      info "Helios CLI version unchanged — no rollback needed"
     fi
   fi
 
@@ -3691,7 +3691,7 @@ main() {
     run_step "Network Connectivity" check_network
     run_step "Helios CLI"  install_pi
     run_step "Helios Agent"          setup_helios_agent || { error "Helios Agent setup failed"; exit 1; }
-    run_step "Helios CLI (symlink)"  install_helios_cli
+    run_step "Helios CLI (wrapper)"  install_helios_cli
     # Interactive — must not go through run_step (captures stdout, breaks read prompts)
     select_provider
     # Normalize org paths in settings.json after provider selection (fresh install)
@@ -3712,7 +3712,7 @@ main() {
       clear_checkpoint
     fi
     snapshot_state
-    run_step "Pi CLI"             update_pi_cli
+    run_step "Helios CLI"             update_pi_cli
     run_step "Agent Directory"    update_agent_dir
   fi
 

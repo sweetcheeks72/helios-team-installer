@@ -496,7 +496,11 @@ _verify_sha256() {
     warn "No sha256 tool found — skipping checksum verification"
     return 0
   fi
-  if [[ -n "$actual" ]] && [[ "$actual" != "$expected" ]]; then
+  if [[ -z "$actual" ]]; then
+    warn "SHA256 tool produced no output — skipping checksum verification"
+    return 0
+  fi
+  if [[ "$actual" != "$expected" ]]; then
     warn "SHA256 mismatch (expected ${expected:0:12}..., got ${actual:0:12}...)"
     return 1
   fi
@@ -1184,7 +1188,10 @@ update_pi_cli() {
 
   # Backup the real binary, remove it so install_pi sees it as missing
   local backup="${real_cli}.backup-$(date +%s)"
-  cp "$real_cli" "$backup" 2>/dev/null || sudo cp "$real_cli" "$backup" 2>/dev/null || true
+  if ! (cp "$real_cli" "$backup" 2>/dev/null || sudo cp "$real_cli" "$backup" 2>/dev/null); then
+    warn "Cannot create backup — aborting update to preserve existing binary"
+    return 1
+  fi
   rm -f "$real_cli" 2>/dev/null || sudo rm -f "$real_cli" 2>/dev/null || true
   hash -r 2>/dev/null || true
 

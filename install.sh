@@ -1179,13 +1179,21 @@ update_pi_cli() {
 
   info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
 
-  # Backup the real binary, remove it so install_pi sees it as missing
+  # Backup the primary binary, then remove ALL known locations so install_pi
+  # doesn't find an old copy and short-circuit. Without this, install_pi finds
+  # ~/.helios-cli/helios (still present) and returns early without downloading.
   local backup="${real_cli}.backup-$(date +%s)"
   if ! (cp "$real_cli" "$backup" 2>/dev/null || sudo cp "$real_cli" "$backup" 2>/dev/null); then
     warn "Cannot create backup — aborting update to preserve existing binary"
     return 1
   fi
-  rm -f "$real_cli" 2>/dev/null || sudo rm -f "$real_cli" 2>/dev/null || true
+
+  # Remove ALL real binary locations so install_pi does a fresh download
+  for _loc in /usr/local/bin/helios "$HOME/.helios-cli/helios" /opt/homebrew/bin/helios; do
+    if [[ -f "$_loc" && ! -L "$_loc" ]]; then
+      rm -f "$_loc" 2>/dev/null || sudo rm -f "$_loc" 2>/dev/null || true
+    fi
+  done
   hash -r 2>/dev/null || true
 
   if ! install_pi; then

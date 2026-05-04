@@ -1031,6 +1031,7 @@ install_pi() {
     echo -e "  ${BOLD}Manual fix:${RESET}"
     echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
     echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp"
+    echo -e "    # The binary is inside the tarball at pi/pi"
     echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/helios && sudo chmod +x /usr/local/bin/helios"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1

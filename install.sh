@@ -895,73 +895,243 @@ check_network() {
 
 # ─── Pi Installation ──────────────────────────────────────────────────────────
 install_pi() {
-  step "Helios CLI (tarball from helios-agi/pi-core)"
+  step "Helios CLI (tarball from helios-agi/helios-installer)"
 
   local HELIOS_CLI_BIN="/usr/local/bin/helios"
+  local HELIOS_CLI_FALLBACK_BIN="$HOME/.local/bin/helios"
 
+  # ── Check existing installation ──────────────────────────────────────────
   if command -v helios &>/dev/null; then
-    local pi_ver
+    local pi_ver existing_bin
+    existing_bin="$(command -v helios)"
     pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-    success "Helios CLI already installed: $pi_ver"
-    PI_INSTALLED=true
-    return 0
+
+    # Validate the existing binary actually works (not a broken symlink or corrupt binary)
+    if [[ -z "$pi_ver" || "$pi_ver" == "unknown" ]]; then
+      warn "Helios CLI found at $existing_bin but appears broken — reinstalling..."
+      # Remove the broken binary so we don't skip install
+      rm -f "$existing_bin" 2>/dev/null || sudo rm -f "$existing_bin" 2>/dev/null || true
+    else
+      success "Helios CLI already installed: $pi_ver ($existing_bin)"
+      PI_INSTALLED=true
+      return 0
+    fi
   fi
 
   info "Helios CLI not found — installing from tarball..."
 
-  # Detect platform
-  local arch
-  arch=$(uname -m)
-  local platform_tarball
-  case "$arch" in
-    arm64|aarch64) platform_tarball="pi-darwin-arm64.tar.gz" ;;
-    x86_64)        platform_tarball="pi-darwin-x64.tar.gz" ;;
+  # ── Detect platform ──────────────────────────────────────────────────────
+  local os_name arch platform_tarball
+  os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+
+  case "${os_name}" in
+    darwin)
+      case "$arch" in
+        arm64|aarch64) platform_tarball="pi-darwin-arm64.tar.gz" ;;
+        x86_64)        platform_tarball="pi-darwin-x64.tar.gz" ;;
+        *)             warn "Unsupported macOS architecture: $arch"; return 1 ;;
+      esac
+      ;;
+    linux)
+      case "$arch" in
+        aarch64|arm64) platform_tarball="pi-linux-arm64.tar.gz" ;;
+        x86_64)        platform_tarball="pi-linux-x64.tar.gz" ;;
+        *)             warn "Unsupported Linux architecture: $arch"; return 1 ;;
+      esac
+      ;;
     *)
-      # Linux support
-      if [[ "$(uname -s)" == "Linux" ]]; then
-        case "$arch" in
-          aarch64) platform_tarball="pi-linux-arm64.tar.gz" ;;
-          x86_64)  platform_tarball="pi-linux-x64.tar.gz" ;;
-          *)       warn "Unsupported architecture: $arch"; return 1 ;;
-        esac
-      else
-        warn "Unsupported platform: $(uname -s) $arch"
-        return 1
-      fi
+      warn "Unsupported OS: $os_name ($arch)"
+      return 1
       ;;
   esac
 
+  # ── Check disk space (need ~100MB for download + extraction) ─────────────
+  local available_mb
+  if command -v df &>/dev/null; then
+    available_mb=$(df -m /tmp 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$available_mb" ]] && [[ "$available_mb" -lt 100 ]]; then
+      warn "Low disk space on /tmp: ${available_mb}MB available (need ~100MB)"
+      echo -e "  ${BOLD}Fix:${RESET} Free up disk space and re-run the installer."
+      return 1
+    fi
+  fi
+
+  # ── Download with multi-source fallback ──────────────────────────────────
   local tarball_url="${HELIOS_CLI_RELEASE_URL}/${platform_tarball}"
   local tmp_dir
   tmp_dir=$(mktemp -d)
+  # Ensure cleanup on any exit from this function
+  trap 'rm -rf "$tmp_dir" 2>/dev/null' RETURN
 
-  if curl -fsSL --retry 3 --retry-delay 5 --max-time 60 "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
-    tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1
-    if [[ -f "$tmp_dir/pi/pi" ]]; then
-      # Install binary
-      if [[ -w "$(dirname "$HELIOS_CLI_BIN")" ]]; then
-        cp "$tmp_dir/pi/pi" "$HELIOS_CLI_BIN"
-        chmod +x "$HELIOS_CLI_BIN"
-      else
-        sudo cp "$tmp_dir/pi/pi" "$HELIOS_CLI_BIN"
-        sudo chmod +x "$HELIOS_CLI_BIN"
-      fi
-      PI_INSTALLED=true
-      success "Helios CLI installed at $HELIOS_CLI_BIN"
-    else
-      error "Tarball extracted but binary not found"
-      rm -rf "$tmp_dir"
-      return 1
-    fi
+  local download_ok=false
+
+  # Strategy 1: Primary URL (public helios-installer repo)
+  info "Downloading $platform_tarball..."
+  if curl -fsSL --retry 3 --retry-delay 5 --max-time 120 \
+       -w "\nHTTP_CODE=%{http_code} SIZE=%{size_download} TIME=%{time_total}s\n" \
+       "$tarball_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
+    download_ok=true
   else
-    error "Failed to download Helios CLI from $tarball_url"
+    local http_code
+    http_code=$(curl -sI -o /dev/null -w "%{http_code}" "$tarball_url" 2>/dev/null || echo "000")
+    warn "Primary download failed (HTTP $http_code) — trying fallback..."
+  fi
+
+  # Strategy 2: Fallback to helios-team-installer releases (agent tarball repo)
+  # The CLI might also be published here in future releases
+  if [[ "$download_ok" != true ]]; then
+    local fallback_url="${HELIOS_RELEASE_URL}/${platform_tarball}"
+    if curl -fsSL --retry 2 --retry-delay 3 --max-time 120 \
+         "$fallback_url" -o "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>&1; then
+      download_ok=true
+      info "Downloaded from fallback URL"
+    else
+      warn "Fallback download also failed"
+    fi
+  fi
+
+  # Strategy 3: gh release download (if user happens to have repo access)
+  if [[ "$download_ok" != true ]] && command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
+    local release_tag="${HELIOS_CLI_RELEASE_URL##*/}"
+    info "Trying gh CLI download (authenticated)..."
+    if gh release download "$release_tag" \
+         --repo helios-agi/helios-installer \
+         --pattern "$platform_tarball" \
+         --dir "$tmp_dir" >> "$LOG_FILE" 2>&1; then
+      mv "$tmp_dir/$platform_tarball" "$tmp_dir/cli.tar.gz" 2>/dev/null
+      download_ok=true
+      info "Downloaded via gh CLI"
+    fi
+  fi
+
+  if [[ "$download_ok" != true ]]; then
+    error "Failed to download Helios CLI from all sources"
+    echo -e "  Tried:"
+    echo -e "    1. ${tarball_url}"
+    echo -e "    2. ${HELIOS_RELEASE_URL}/${platform_tarball}"
+    echo -e "    3. gh release download (if available)"
+    echo -e ""
     echo -e "  ${BOLD}Manual fix:${RESET}"
-    echo -e "    Download from: ${HELIOS_CLI_RELEASE_URL}"
-    rm -rf "$tmp_dir"
+    echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
+    echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp"
+    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/helios && sudo chmod +x /usr/local/bin/helios"
     return 1
   fi
 
-  rm -rf "$tmp_dir"
+  # ── Validate download ────────────────────────────────────────────────────
+  # Check file exists and has reasonable size (> 1MB for a CLI binary tarball)
+  local tarball_size
+  tarball_size=$(wc -c < "$tmp_dir/cli.tar.gz" 2>/dev/null || echo "0")
+  if [[ "$tarball_size" -lt 1048576 ]]; then
+    error "Downloaded tarball is suspiciously small (${tarball_size} bytes) — likely corrupt or an error page"
+    # Log first 200 chars to help diagnose (might be an HTML error page)
+    head -c 200 "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>/dev/null
+    return 1
+  fi
+
+  # Validate it's actually a gzip file (magic bytes: 1f 8b)
+  local magic
+  magic=$(xxd -p -l 2 "$tmp_dir/cli.tar.gz" 2>/dev/null || od -A n -t x1 -N 2 "$tmp_dir/cli.tar.gz" 2>/dev/null | tr -d ' ')
+  if [[ "$magic" != "1f8b" ]]; then
+    error "Downloaded file is not a valid gzip archive (got: $magic)"
+    echo -e "  This usually means the download URL returned an HTML error page."
+    head -c 500 "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>/dev/null
+    return 1
+  fi
+
+  # ── Extract tarball ──────────────────────────────────────────────────────
+  if ! tar xzf "$tmp_dir/cli.tar.gz" -C "$tmp_dir" >> "$LOG_FILE" 2>&1; then
+    error "Failed to extract tarball — file may be corrupt"
+    echo -e "  ${BOLD}Fix:${RESET} Re-run the installer. If this persists, download manually:"
+    echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
+    return 1
+  fi
+
+  # ── Locate the binary (handle varying tarball structures) ────────────────
+  local pi_binary=""
+  # Check common paths where the binary might be
+  for candidate in \
+    "$tmp_dir/pi/pi" \
+    "$tmp_dir/pi/helios" \
+    "$tmp_dir/helios" \
+    "$tmp_dir/pi"; do
+    if [[ -f "$candidate" ]] && [[ -x "$candidate" || $(file "$candidate" 2>/dev/null) == *executable* ]]; then
+      pi_binary="$candidate"
+      break
+    fi
+  done
+
+  # Fallback: search for any executable that looks like the CLI
+  if [[ -z "$pi_binary" ]]; then
+    pi_binary=$(find "$tmp_dir" -name "pi" -type f ! -name "*.gz" ! -name "*.json" 2>/dev/null | head -1)
+  fi
+
+  if [[ -z "$pi_binary" || ! -f "$pi_binary" ]]; then
+    error "Tarball extracted but CLI binary not found"
+    echo -e "  Tarball contents:"
+    find "$tmp_dir" -type f | head -20 | sed 's/^/    /' | tee -a "$LOG_FILE"
+    return 1
+  fi
+
+  chmod +x "$pi_binary"
+
+  # ── Verify binary actually runs ──────────────────────────────────────────
+  if ! "$pi_binary" --version &>/dev/null; then
+    # Might be a architecture mismatch (e.g. x64 binary on ARM)
+    local bin_arch
+    bin_arch=$(file "$pi_binary" 2>/dev/null || echo "unknown")
+    error "CLI binary exists but won't execute"
+    echo -e "  Binary: $bin_arch"
+    echo -e "  System: $(uname -m)"
+    echo -e "  This may be an architecture mismatch."
+    return 1
+  fi
+
+  local installed_ver
+  installed_ver=$("$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+
+  # ── Install binary (try multiple locations) ──────────────────────────────
+  local install_target=""
+
+  # Try /usr/local/bin first (standard system-wide location)
+  if [[ -d "/usr/local/bin" ]]; then
+    if [[ -w "/usr/local/bin" ]]; then
+      cp "$pi_binary" "$HELIOS_CLI_BIN"
+      chmod +x "$HELIOS_CLI_BIN"
+      install_target="$HELIOS_CLI_BIN"
+    elif sudo -n true 2>/dev/null || sudo -v 2>/dev/null; then
+      sudo cp "$pi_binary" "$HELIOS_CLI_BIN"
+      sudo chmod +x "$HELIOS_CLI_BIN"
+      install_target="$HELIOS_CLI_BIN"
+    fi
+  fi
+
+  # Fallback: ~/.local/bin (no sudo needed)
+  if [[ -z "$install_target" ]]; then
+    mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK_BIN")"
+    cp "$pi_binary" "$HELIOS_CLI_FALLBACK_BIN"
+    chmod +x "$HELIOS_CLI_FALLBACK_BIN"
+    install_target="$HELIOS_CLI_FALLBACK_BIN"
+    warn "Could not install to /usr/local/bin (no write access) — installed to $HELIOS_CLI_FALLBACK_BIN"
+    # Ensure ~/.local/bin is in PATH
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
+      echo -e "  ${BOLD}Note:${RESET} Add to your shell profile: ${CYAN}export PATH=\"\$HOME/.local/bin:\$PATH\"${RESET}"
+    fi
+  fi
+
+  # ── Final verification: confirm the installed binary is reachable ────────
+  # Re-hash to pick up newly installed binary
+  hash -r 2>/dev/null || true
+
+  if command -v helios &>/dev/null; then
+    PI_INSTALLED=true
+    success "Helios CLI $installed_ver installed at $install_target"
+  else
+    # Binary installed but not on PATH yet (will be after shell restart)
+    PI_INSTALLED=true
+    success "Helios CLI $installed_ver installed at $install_target (restart shell to use)"
+  fi
 }
 
 # ─── Pi CLI Update ────────────────────────────────────────────────────────────
@@ -978,7 +1148,27 @@ update_pi_cli() {
   current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
-  install_pi
+  # Force reinstall by temporarily removing the existing binary
+  local existing_bin
+  existing_bin="$(command -v helios)"
+  if [[ -n "$existing_bin" ]]; then
+    local backup="${existing_bin}.backup-$(date +%s)"
+    cp "$existing_bin" "$backup" 2>/dev/null || sudo cp "$existing_bin" "$backup" 2>/dev/null || true
+    rm -f "$existing_bin" 2>/dev/null || sudo rm -f "$existing_bin" 2>/dev/null || true
+    hash -r 2>/dev/null || true
+  fi
+
+  if ! install_pi; then
+    # Restore backup if install failed
+    if [[ -n "${backup:-}" && -f "$backup" ]]; then
+      mv "$backup" "$existing_bin" 2>/dev/null || sudo mv "$backup" "$existing_bin" 2>/dev/null || true
+      warn "Install failed — restored previous CLI version"
+    fi
+    return 1
+  fi
+
+  # Clean up backup
+  rm -f "${backup:-}" 2>/dev/null || sudo rm -f "${backup:-}" 2>/dev/null || true
 }
 
 # ─── Helios Agent (Tarball) ───────────────────────────────────────────────────

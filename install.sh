@@ -708,14 +708,39 @@ check_prerequisites() {
     }
   fi
 
-  # ── Node.js 18+ ────────────────────────────────────────────────────────────
+  # ── Node.js 22 LTS (pinned — native modules in tarball require Node 22) ────
   local node_ok=false
+  local NODE_MAJOR_MIN=18
+  local NODE_MAJOR_MAX=22  # tarball native modules compiled against Node 22
   if command -v node &>/dev/null; then
-    if node -e "process.exit(parseInt(process.version.slice(1)) < 18 ? 1 : 0)" 2>/dev/null; then
+    local node_major
+    node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+    if [[ "$node_major" -ge "$NODE_MAJOR_MIN" ]] && [[ "$node_major" -le "$NODE_MAJOR_MAX" ]]; then
       node_ok=true
       success "Node.js $(node -v)"
+    elif [[ "$node_major" -gt "$NODE_MAJOR_MAX" ]]; then
+      warn "Node.js $(node -v) is too new — native modules require Node ${NODE_MAJOR_MAX}.x LTS"
+      warn "better-sqlite3 and other native addons will fail with NODE_MODULE_VERSION mismatch"
+      if [[ "$(current_platform)" == "macos" ]] && command -v brew &>/dev/null; then
+        info "Downgrading to Node ${NODE_MAJOR_MAX} LTS via Homebrew..."
+        brew install node@${NODE_MAJOR_MAX} >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+        brew link --overwrite node@${NODE_MAJOR_MAX} >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+        if command -v node &>/dev/null; then
+          node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          if [[ "$node_major" -le "$NODE_MAJOR_MAX" ]]; then
+            node_ok=true
+            success "Node.js $(node -v) (downgraded to LTS)"
+          fi
+        fi
+      fi
+      if [[ "$node_ok" == false ]]; then
+        warn "Could not auto-downgrade Node. Install Node ${NODE_MAJOR_MAX} LTS manually:"
+        warn "  brew install node@${NODE_MAJOR_MAX} && brew link --overwrite node@${NODE_MAJOR_MAX}"
+        warn "Continuing with $(node -v) — native module rebuild will be attempted"
+        node_ok=true  # allow install to continue; repair will be attempted later
+      fi
     else
-      warn "Node.js $(node -v) is too old (need 18+) — upgrading..."
+      warn "Node.js $(node -v) is too old (need ${NODE_MAJOR_MIN}+) — upgrading..."
     fi
   fi
 
@@ -1715,8 +1740,19 @@ install_agent_deps() {
   }
 
   _repair_better_sqlite3() {
-    info "Repairing better-sqlite3 for Node $(node -p 'process.versions.node' 2>/dev/null || echo unknown)..."
+    local node_ver
+    node_ver=$(node -p 'process.versions.node' 2>/dev/null || echo unknown)
+    local node_major
+    node_major=$(node -e 'console.log(parseInt(process.version.slice(1)))' 2>/dev/null || echo 0)
+    info "Repairing better-sqlite3 for Node ${node_ver} (major: ${node_major})..."
 
+    # Warn if Node version is beyond what we ship native binaries for
+    if [[ "$node_major" -gt 22 ]]; then
+      warn "Node ${node_ver} is newer than the tarball's native modules (built for Node 22)"
+      warn "Attempting to compile from source — this requires Xcode CLT / build-essential"
+    fi
+
+    # Attempt 1: npm rebuild from source
     run_with_spinner "Rebuild better-sqlite3" \
       bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source 2>&1" || {
       warn "better-sqlite3 rebuild failed — reinstalling package"
@@ -1727,6 +1763,19 @@ install_agent_deps() {
       return 0
     fi
 
+    # Attempt 2: Remove and reinstall with --build-from-source
+    rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
+    info "Reinstalling better-sqlite3 with --build-from-source..."
+    (cd "$PI_AGENT_DIR" && npm install better-sqlite3 --build-from-source --no-audit --no-fund 2>&1) || {
+      warn "better-sqlite3 install --build-from-source failed"
+    }
+
+    if _better_sqlite3_ok; then
+      success "better-sqlite3 reinstalled for current Node ✓"
+      return 0
+    fi
+
+    # Attempt 3: Fall back to npm_install_with_recovery (lets npm pick prebuild)
     rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
     npm_install_with_recovery "$PI_AGENT_DIR" "npm install better-sqlite3" "better-sqlite3" || {
       warn "better-sqlite3 reinstall failed"
@@ -1739,6 +1788,8 @@ install_agent_deps() {
     fi
 
     warn "better-sqlite3 still does not load after repair"
+    warn "Try: cd ~/.pi/agent && npm rebuild better-sqlite3 --build-from-source"
+    warn "Or install Node 22 LTS: brew install node@22 && brew link --overwrite node@22"
     return 1
   }
 

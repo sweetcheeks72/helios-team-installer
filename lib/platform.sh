@@ -98,7 +98,12 @@ _install_nodejs() {
   case "$platform" in
     macos)
       if command -v brew &>/dev/null; then
-        brew install node >> "${LOG_FILE:-/dev/null}" 2>&1
+        # Pin to Node 22 LTS — native modules in the tarball are compiled
+        # against Node 22. Node 24+ changes NODE_MODULE_VERSION and breaks
+        # better-sqlite3 and other native addons.
+        brew install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1
+        # Ensure node@22 is linked (brew won't auto-link versioned formulae)
+        brew link --overwrite node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
       else
         # No Homebrew (non-admin user) — install via fnm (no admin required)
         echo "  No Homebrew available — installing Node.js via fnm..." >&2

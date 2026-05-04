@@ -188,7 +188,7 @@ esac
 # is not available on the release server (e.g. older releases pre-multi-arch).
 HELIOS_AGENT_TARBALL="helios-agent-latest-${INST_OS}-${INST_ARCH}.tar.gz"
 HELIOS_AGENT_TARBALL_UNIVERSAL="helios-agent-latest.tar.gz"
-HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/pi-core/releases/download/v0.70.6-helios"
+HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/helios-installer/releases/download/v0.70.6-helios"
 FAMILIAR_REPO="github.com/helios-agi/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
 FAMILIAR_DIR="$HOME/.familiar"

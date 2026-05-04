@@ -971,8 +971,6 @@ install_pi() {
   local tarball_url="${HELIOS_CLI_RELEASE_URL}/${platform_tarball}"
   local tmp_dir
   tmp_dir=$(mktemp -d)
-  # Ensure cleanup on any exit from this function
-  trap 'rm -rf "$tmp_dir" 2>/dev/null' RETURN
 
   local download_ok=false
 
@@ -1025,7 +1023,8 @@ install_pi() {
     echo -e "  ${BOLD}Manual fix:${RESET}"
     echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
     echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp"
-    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/helios && sudo chmod +x /usr/local/bin/helios"
+    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/pi && sudo chmod +x /usr/local/bin/pi"
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1037,6 +1036,7 @@ install_pi() {
     error "Downloaded tarball is suspiciously small (${tarball_size} bytes) — likely corrupt or an error page"
     # Log first 200 chars to help diagnose (might be an HTML error page)
     head -c 200 "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>/dev/null
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1047,6 +1047,7 @@ install_pi() {
     error "Downloaded file is not a valid gzip archive (got: $magic)"
     echo -e "  This usually means the download URL returned an HTML error page."
     head -c 500 "$tmp_dir/cli.tar.gz" >> "$LOG_FILE" 2>/dev/null
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1055,6 +1056,7 @@ install_pi() {
     error "Failed to extract tarball — file may be corrupt"
     echo -e "  ${BOLD}Fix:${RESET} Re-run the installer. If this persists, download manually:"
     echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1081,6 +1083,7 @@ install_pi() {
     error "Tarball extracted but CLI binary not found"
     echo -e "  Tarball contents:"
     find "$tmp_dir" -type f | head -20 | sed 's/^/    /' | tee -a "$LOG_FILE"
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1095,6 +1098,7 @@ install_pi() {
     echo -e "  Binary: $bin_arch"
     echo -e "  System: $(uname -m)"
     echo -e "  This may be an architecture mismatch."
+    rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
 
@@ -1146,6 +1150,9 @@ install_pi() {
       sudo cp "$pi_binary" "$helios_target" 2>/dev/null || true
     chmod +x "$helios_target" 2>/dev/null || sudo chmod +x "$helios_target" 2>/dev/null || true
   fi
+
+  # ── Cleanup temp dir ────────────────────────────────────────────────────────
+  rm -rf "$tmp_dir" 2>/dev/null
 
   # ── Final verification: confirm the installed binary is reachable ────────
   # Re-hash to pick up newly installed binary
@@ -1675,11 +1682,18 @@ install_helios_cli() {
   # Also install to ~/.local/bin
   mkdir -p "$HOME/.local/bin"
   ln -sfn "$helios_bin" "$HOME/.local/bin/helios"
-  ln -sfn "$helios_bin" "$HOME/.local/bin/pi"
+  # Only symlink pi → wrapper if ~/.local/bin/pi isn't the REAL binary.
+  # On no-sudo machines, install_pi places the real binary at ~/.local/bin/pi
+  # and we must NOT overwrite it with the wrapper symlink.
+  if [[ -L "$HOME/.local/bin/pi" || ! -f "$HOME/.local/bin/pi" ]]; then
+    ln -sfn "$helios_bin" "$HOME/.local/bin/pi"
+    success "pi → ~/.local/bin/pi (wrapper)"
+  else
+    info "~/.local/bin/pi is the real Pi CLI binary — keeping it"
+  fi
   if [[ "$system_install" == false ]]; then
     success "helios → ~/.local/bin/helios"
   fi
-  success "pi → ~/.local/bin/pi"
 
   # Add to PATH in shell profile if not already there
   local shell_rc

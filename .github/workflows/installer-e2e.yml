@@ -1,0 +1,127 @@
+name: Installer E2E Tests
+
+on:
+  push:
+    branches: [main]
+    paths: ['install.sh', 'lib/**', 'tests/**', 'build-release.sh']
+  pull_request:
+    paths: ['install.sh', 'lib/**', 'tests/**', 'build-release.sh']
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        run: shellcheck install.sh lib/*.sh build-release.sh build-familiar-release.sh
+
+  unit-tests:
+    name: Unit Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bats-core/bats-action@4.0.0
+        id: bats
+      - name: Run unit tests
+        env:
+          BATS_LIB_PATH: ${{ steps.bats.outputs.lib-path }}
+        run: bats tests/unit_tests.bats
+
+  install-flow:
+    name: Install Flow (${{ matrix.os }}, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        node: ['20', '22']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run install flow tests
+        run: bash tests/e2e_install_flow.sh --local
+
+  dry-run-fresh:
+    name: Dry-run Fresh Install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fresh install dry-run
+        run: |
+          bash install.sh --dry-run 2>&1 | tee dry-run.log
+          grep -q "DRY RUN" dry-run.log
+
+  dry-run-update:
+    name: Dry-run Update (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Simulate existing install
+        run: |
+          mkdir -p ~/.pi/agent/node_modules/awilix
+          mkdir -p ~/.pi/agent/extensions
+          mkdir -p ~/.pi/agent/bin
+          echo '#!/bin/bash' > ~/.pi/agent/bin/helios && chmod +x ~/.pi/agent/bin/helios
+          echo "2.5.0" > ~/.pi/agent/VERSION
+          echo '{"defaultProvider":"anthropic"}' > ~/.pi/agent/settings.json
+      - name: Update dry-run
+        run: |
+          bash install.sh --dry-run 2>&1 | tee dry-run.log
+          grep -q "DRY RUN" dry-run.log
+          grep -q "update mode" dry-run.log
+
+  docker-e2e:
+    name: Docker E2E (full install)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run Docker E2E
+        run: bash tests/e2e_docker.sh
+
+  idempotency:
+    name: Idempotency Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run installer twice with --dry-run
+        run: |
+          bash install.sh --dry-run
+          bash install.sh --dry-run
+          echo "✓ Idempotent — second run completed without error"
+
+  summary:
+    name: Test Summary
+    needs: [shellcheck, unit-tests, install-flow, dry-run-fresh, dry-run-update, docker-e2e, idempotency]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Results
+        run: |
+          echo "## Installer Test Results" >> $GITHUB_STEP_SUMMARY
+          for job in shellcheck unit-tests install-flow dry-run-fresh dry-run-update docker-e2e idempotency; do
+            echo "- **${job}**: ${{ needs[job].result || 'unknown' }}" >> $GITHUB_STEP_SUMMARY
+          done

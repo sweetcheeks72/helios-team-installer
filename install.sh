@@ -1990,7 +1990,7 @@ install_agent_deps() {
 
   _better_sqlite3_ok() {
     [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]] || return 0
-    node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
+    timeout 15 node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
   }
 
   _repair_better_sqlite3() {
@@ -2008,7 +2008,7 @@ install_agent_deps() {
 
     # Attempt 1: npm rebuild from source
     run_with_spinner "Rebuild better-sqlite3" \
-      bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && timeout 120 npm rebuild better-sqlite3 --build-from-source 2>&1" || {
       warn "better-sqlite3 rebuild failed — reinstalling package"
     }
 
@@ -2020,7 +2020,7 @@ install_agent_deps() {
     # Attempt 2: Remove and reinstall with --build-from-source
     rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
     info "Reinstalling better-sqlite3 with --build-from-source..."
-    (cd "$PI_AGENT_DIR" && npm install better-sqlite3 --build-from-source --no-audit --no-fund 2>&1) || {
+    (cd "$PI_AGENT_DIR" && timeout 120 npm install better-sqlite3 --build-from-source --no-audit --no-fund 2>&1) || {
       warn "better-sqlite3 install --build-from-source failed"
     }
 
@@ -2070,7 +2070,7 @@ install_agent_deps() {
       # After native modules check passes, also verify ESM import works
       local esm_ok=true
       if [[ -f "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js" ]]; then
-        node --input-type=module -e "
+        timeout 30 node --input-type=module -e "
           import { pathToFileURL } from 'url';
           await import(pathToFileURL('$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js'));
         " 2>/dev/null || esm_ok=false

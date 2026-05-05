@@ -204,7 +204,7 @@ test_no_bare_timeout() {
   local problematic
   problematic=$(grep -n '^\s*timeout \|[^_]timeout [0-9]' "${REPO_ROOT}/install.sh" | \
     grep -v '_timeout_cmd\|command -v timeout\|gtimeout\|#\|curl.*timeout\|connect-timeout\|max-time' | \
-    grep -v "^338:\|^2569:\|^2571:\|^2573:" | wc -l | tr -d ' ')
+    grep -v 'timeout "\$@"\|timeout 30 uvx' | wc -l | tr -d ' ')
 
   if [[ "$problematic" -eq 0 ]]; then
     pass "No unguarded bare 'timeout' calls"

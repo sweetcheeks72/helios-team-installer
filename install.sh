@@ -53,6 +53,7 @@ fi
 
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 CHECK_ONLY=false
+DRY_RUN=false
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
@@ -63,6 +64,7 @@ for _arg in "$@"; do
       echo "Options:"
       echo "  --fresh    Force full interactive setup (re-prompt provider, keys)"
       echo "  --update   Run in update mode (skip interactive prompts)"
+      echo "  --dry-run  Show what would happen without making changes"
       echo "  --check    Verify installation status without installing"
       echo "  --verify   Alias for --check"
       echo "  --help     Show this help message"
@@ -77,13 +79,17 @@ for _arg in "$@"; do
     --check|--verify)
       CHECK_ONLY=true
       ;;
+    --dry-run)
+      DRY_RUN=true
+      CHECK_ONLY=true
+      ;;
   esac
 done
 
-# ─── Check-only mode: run verifications without installing ───────────────────
-if [[ "${1:-}" == "--check" ]] || [[ "${1:-}" == "--verify" ]]; then
-  # Run verification only — report what would be installed
-  CHECK_ONLY=true
+if [[ "$DRY_RUN" == "true" ]]; then
+  echo -e "\n  ══════════════════════════════════════"
+  echo -e "  ║  DRY RUN — no changes will be made  ║"
+  echo -e "  ══════════════════════════════════════\n"
 fi
 
 # ─── Restore stdin from terminal (critical for curl|bash piping) ─────────────

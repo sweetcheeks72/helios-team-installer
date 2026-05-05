@@ -54,6 +54,7 @@ fi
 # ─── Early arg check (before tty redirect) ───────────────────────────────────
 CHECK_ONLY=false
 DRY_RUN=false
+LOCAL_PACKAGE=""
 for _arg in "$@"; do
   case "$_arg" in
     --help|-h)
@@ -66,11 +67,10 @@ for _arg in "$@"; do
       echo "  --update   Run in update mode (skip interactive prompts)"
       echo "  --dry-run  Show what would happen without making changes"
       echo "  --check    Verify installation status without installing"
-      echo "  --verify   Alias for --check"
       echo "  --help     Show this help message"
       echo ""
-      echo "First install (team members):"
-      echo "  curl -fsSL https://raw.githubusercontent.com/helios-agi/helios-team-installer/main/bootstrap.sh | bash"
+      echo "Install or update:"
+      echo "  curl -fsSL https://github.com/helios-agi/helios-team-installer/releases/latest/download/bootstrap.sh | bash"
       echo ""
       echo "Re-run / update:"
       echo "  helios update"
@@ -83,7 +83,16 @@ for _arg in "$@"; do
       DRY_RUN=true
       CHECK_ONLY=true
       ;;
+    --local-package)
+      ;;
   esac
+  # Capture --local-package value (next arg)
+  if [[ "$_arg" == "--local-package" ]]; then
+    _capture_next=true
+  elif [[ "${_capture_next:-}" == "true" ]]; then
+    LOCAL_PACKAGE="$_arg"
+    _capture_next=""
+  fi
 done
 
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -933,9 +942,30 @@ install_pi() {
     if command -v helios &>/dev/null || [[ -f "$HOME/.helios-cli/helios" ]]; then
       info "[dry-run] CLI binary already installed"
     else
-      info "[dry-run] Would download Helios CLI binary"
+      info "[dry-run] Would install Helios CLI binary"
     fi
     return 0
+  fi
+
+  # If local package provided, install CLI from it
+  if [[ -n "${LOCAL_PACKAGE:-}" ]] && [[ -d "$LOCAL_PACKAGE/cli/pi" || -f "$LOCAL_PACKAGE/cli/pi/pi" ]]; then
+    local pi_binary="$LOCAL_PACKAGE/cli/pi/pi"
+    if [[ ! -f "$pi_binary" ]]; then
+      pi_binary=$(find "$LOCAL_PACKAGE/cli" -name "pi" -type f ! -name "*.json" 2>/dev/null | head -1)
+    fi
+    if [[ -n "$pi_binary" && -f "$pi_binary" ]]; then
+      chmod +x "$pi_binary"
+      local HELIOS_CLI_FALLBACK="$HOME/.helios-cli/helios"
+      mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK")"
+      cp "$pi_binary" "$HELIOS_CLI_FALLBACK"
+      chmod +x "$HELIOS_CLI_FALLBACK"
+      local pi_binary_dir
+      pi_binary_dir="$(dirname "$pi_binary")"
+      [[ -f "$pi_binary_dir/package.json" ]] && cp "$pi_binary_dir/package.json" "$(dirname "$HELIOS_CLI_FALLBACK")/package.json"
+      success "Helios CLI installed from package"
+      PI_INSTALLED=true
+      return 0
+    fi
   fi
 
   # Architecture:
@@ -1275,7 +1305,32 @@ setup_helios_agent() {
     return 0
   fi
 
-  # ── Helper: download a file, return non-zero on failure ──────────────────
+  # Use local package if available (all-in-one tarball)
+  if [[ -n "${LOCAL_PACKAGE:-}" ]] && [[ -d "$LOCAL_PACKAGE/agent" ]]; then
+    info "Installing agent from local package..."
+    local tmp_stash
+    tmp_stash="$(mktemp -d)"
+    if [[ -d "$PI_AGENT_DIR" ]]; then
+      for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
+        [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
+      done
+    fi
+    rm -rf "$PI_AGENT_DIR"
+    mkdir -p "$HOME/.pi"
+    cp -a "$LOCAL_PACKAGE/agent" "$PI_AGENT_DIR"
+    for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
+      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
+    done
+    rm -rf "$tmp_stash"
+    if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
+      cat "$LOCAL_PACKAGE/VERSION" > "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo "local" > "$PI_AGENT_DIR/VERSION"
+    fi
+    _migrate_settings_packages
+    _prune_stale_org_dirs
+    success "Helios agent installed from package"
+    return 0
+  fi
+
   _helios_download() {
     local url="$1" dest="$2"
     local fname

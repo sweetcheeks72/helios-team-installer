@@ -170,8 +170,6 @@ rsync -a \
   --exclude='patches/' \
   --exclude='reports/' \
   --exclude='website/' \
-  --exclude='analysis/' \
-  --exclude='brainv2/' \
   --exclude='MERGE_GUIDANCE*.md' \
   --exclude='ORCHESTRATOR_MERGE_HANDOFF.md' \
   --exclude='coordination-log-*.md' \
@@ -228,7 +226,6 @@ rsync -a \
   --exclude='.planning/' \
   --exclude='.DS_Store' \
   --exclude='memgraph-data/' \
-  --exclude='subagent-mesh/' \
   --exclude='logs/' \
   --exclude='recaps/' \
   --exclude='memory/' \

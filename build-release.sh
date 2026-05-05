@@ -275,10 +275,6 @@ rm -rf "${STAGE_DIR}/extensions/format-preference/"
 find "${STAGE_DIR}/extensions" -name "*.test.ts" -delete 2>/dev/null || true
 find "${STAGE_DIR}/extensions" -name "*.bak" -delete 2>/dev/null || true
 
-# Strip pre-compiled native modules — they're ABI-version-specific.
-# The installer runs prebuild-install to download the correct binary for the target Node version.
-rm -rf "${STAGE_DIR}/node_modules/better-sqlite3/build" 2>/dev/null
-
 echo "✅ Cleanup complete"
 
 # ---------------------------------------------------------------------------
@@ -543,6 +539,10 @@ fi
 TOTAL_NM_SIZE="$(du -sh "${STAGE_DIR}/node_modules" 2>/dev/null | cut -f1 || echo "0")"
 echo ""
 echo "📊 Bundled node_modules size: ${TOTAL_NM_SIZE}"
+
+# Strip ABI-specific native binaries — installer runs prebuild-install for target Node version
+rm -rf "${STAGE_DIR}/node_modules/better-sqlite3/build" 2>/dev/null
+echo "🧹 Stripped better-sqlite3 compiled binary (will prebuild-install on target)"
 
 # ---------------------------------------------------------------------------
 # Create tarball

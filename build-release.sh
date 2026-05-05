@@ -258,14 +258,16 @@ echo "✅ Copy complete"
 
 echo "🧹 Post-copy cleanup ..."
 
-# hema-dispatch/ is a test/barrel sub-package, not a Pi extension.
-# Pi auto-discovers directories in extensions/ and fails on this one.
-# The real extension hema-dispatch.ts depends on local Memgraph infra — exclude both.
+# hema-dispatch/ is a standalone extension that depends on local Memgraph — remove it entirely.
 rm -rf "${STAGE_DIR}/extensions/hema-dispatch/"
 rm -f "${STAGE_DIR}/extensions/hema-dispatch.ts"
-rm -rf "${STAGE_DIR}/extensions/hema-dispatch-lib/"
+
+# hema-dispatch-lib/ is a utility library imported by cortex extensions (decay-logger.ts etc).
+# Keep the library files but remove index.ts which the extension loader would try to load as an extension.
+rm -f "${STAGE_DIR}/extensions/hema-dispatch-lib/index.ts"
+rm -f "${STAGE_DIR}/extensions/hema-dispatch-lib/package.json"
+
 rm -f "${STAGE_DIR}/extensions/warm-loop.ts"
-rm -f "${STAGE_DIR}/extensions/session-mesh-bus.ts"
 rm -f "${STAGE_DIR}/extensions/mesh-topology.ts"
 rm -rf "${STAGE_DIR}/extensions/format-preference/"
 

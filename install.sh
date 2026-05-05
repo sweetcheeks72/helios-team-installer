@@ -1130,6 +1130,14 @@ install_pi() {
   chmod +x "$HELIOS_CLI_FALLBACK"
   install_target="$HELIOS_CLI_FALLBACK"
 
+  local pi_binary_dir
+  pi_binary_dir="$(dirname "$pi_binary")"
+  local fallback_dir
+  fallback_dir="$(dirname "$HELIOS_CLI_FALLBACK")"
+  if [[ -f "$pi_binary_dir/package.json" ]]; then
+    cp "$pi_binary_dir/package.json" "$fallback_dir/package.json"
+  fi
+
   # Also install to /usr/local/bin as convenience (may be wiped by macOS upgrades)
   if [[ ! -d "/usr/local/bin" ]]; then
     sudo -n mkdir -p /usr/local/bin 2>/dev/null && \
@@ -1139,8 +1147,10 @@ install_pi() {
     [[ -L "$HELIOS_CLI_BIN" ]] && { rm -f "$HELIOS_CLI_BIN" 2>/dev/null || sudo rm -f "$HELIOS_CLI_BIN" 2>/dev/null || true; }
     if [[ -w "/usr/local/bin" ]]; then
       cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
+      [[ -f "$pi_binary_dir/package.json" ]] && cp "$pi_binary_dir/package.json" /usr/local/bin/package.json 2>/dev/null || true
     elif sudo -n true 2>/dev/null; then
       sudo cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && sudo chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
+      [[ -f "$pi_binary_dir/package.json" ]] && sudo cp "$pi_binary_dir/package.json" /usr/local/bin/package.json 2>/dev/null || true
     fi
   fi
 
@@ -1188,10 +1198,13 @@ update_pi_cli() {
     return 1
   fi
 
-  # Remove ALL real binary locations so install_pi does a fresh download
+  # Remove ALL real binary locations (and accompanying package.json) so install_pi does a fresh download
+  local _dir=""
   for _loc in /usr/local/bin/helios "$HOME/.helios-cli/helios" /opt/homebrew/bin/helios; do
     if [[ -f "$_loc" && ! -L "$_loc" ]]; then
       rm -f "$_loc" 2>/dev/null || sudo rm -f "$_loc" 2>/dev/null || true
+      _dir="$(dirname "$_loc")"
+      rm -f "$_dir/package.json" 2>/dev/null || sudo rm -f "$_dir/package.json" 2>/dev/null || true
     fi
   done
   hash -r 2>/dev/null || true

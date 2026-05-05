@@ -1483,8 +1483,8 @@ update_agent_dir() {
   step "Agent Directory"
 
   if [[ ! -d "$PI_AGENT_DIR/.git" ]]; then
-    info "Agent directory is not a git repo — skipping git update"
-    return 0
+    setup_helios_agent
+    return $?
   fi
 
   # Fetch latest from origin/main

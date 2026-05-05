@@ -775,8 +775,9 @@ check_prerequisites() {
     success "bun $(bun --version)"
   else
     info "Installing Bun runtime..."
-    if curl -fsSL https://bun.sh/install | bash >> "${LOG_FILE:-/dev/null}" 2>&1; then
+    if timeout 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
       export PATH="$HOME/.bun/bin:$PATH"
+      hash -r 2>/dev/null || true
       if command -v bun &>/dev/null; then
         success "bun $(bun --version) installed"
       else
@@ -1997,12 +1998,16 @@ install_agent_deps() {
 
     # Attempt 1: prebuild-install downloads the correct binary for this Node ABI
     local bs3_dir="$PI_AGENT_DIR/node_modules/better-sqlite3"
-    if [[ -f "$bs3_dir/node_modules/prebuild-install/bin.js" ]]; then
+    local pbi_bin="$PI_AGENT_DIR/node_modules/prebuild-install/bin.js"
+    if [[ -f "$pbi_bin" ]]; then
+      run_with_spinner "Download better-sqlite3 prebuild" \
+        bash -c "cd '$bs3_dir' && node '$pbi_bin' --runtime napi 2>&1" || true
+    elif [[ -f "$bs3_dir/node_modules/prebuild-install/bin.js" ]]; then
       run_with_spinner "Download better-sqlite3 prebuild" \
         bash -c "cd '$bs3_dir' && node node_modules/prebuild-install/bin.js --runtime napi 2>&1" || true
     else
       run_with_spinner "Download better-sqlite3 prebuild" \
-        bash -c "cd '$PI_AGENT_DIR' && npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
+        bash -c "cd '$PI_AGENT_DIR' && timeout 60 npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
     fi
 
     if _better_sqlite3_ok; then
@@ -2093,8 +2098,7 @@ install_agent_deps() {
   local nm_backup=""
   if [[ -d "$PI_AGENT_DIR/node_modules" ]]; then
     nm_backup="$PI_AGENT_DIR/node_modules.pre-install-backup"
-    info "Backing up bundled node_modules..."
-    cp -a "$PI_AGENT_DIR/node_modules" "$nm_backup" 2>/dev/null || nm_backup=""
+    mv "$PI_AGENT_DIR/node_modules" "$nm_backup" 2>/dev/null || nm_backup=""
   fi
 
   # Fallback: full npm install (deps not in tarball or rebuild failed)
@@ -3762,8 +3766,15 @@ main() {
     # Ensure bun is available (CLI binary requires it for package resolution)
     if ! command -v bun &>/dev/null; then
       info "Installing Bun (required by Helios CLI)..."
-      if curl -fsSL https://bun.sh/install 2>/dev/null | bash >> "${LOG_FILE:-/dev/null}" 2>&1; then
+      if timeout 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
         export PATH="$HOME/.bun/bin:$PATH"
+        hash -r 2>/dev/null || true
+        if command -v bun &>/dev/null; then
+          success "Bun $(bun --version) installed"
+        fi
+      else
+        warn "Bun installation failed — CLI binary may not work correctly"
+        warn "Install manually: curl -fsSL https://bun.sh/install | bash"
       fi
     fi
     snapshot_state

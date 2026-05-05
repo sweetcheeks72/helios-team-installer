@@ -944,7 +944,7 @@ install_pi() {
 
   if [[ -n "$real_cli" ]]; then
     local cli_ver
-    cli_ver=$("$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+    cli_ver=$(timeout 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
     success "Helios CLI binary already installed: $cli_ver ($real_cli)"
     PI_INSTALLED=true
     return 0
@@ -1124,7 +1124,7 @@ install_pi() {
   chmod +x "$pi_binary"
 
   # ── Verify binary runs ──────────────────────────────────────────────────
-  if ! "$pi_binary" --version &>/dev/null; then
+  if ! timeout 15 "$pi_binary" --version &>/dev/null; then
     local bin_arch
     bin_arch=$(file "$pi_binary" 2>/dev/null || echo "unknown")
     error "CLI binary exists but won't execute"
@@ -1134,7 +1134,7 @@ install_pi() {
     return 1
   fi
   local installed_ver
-  installed_ver=$("$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  installed_ver=$(timeout 10 "$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   # ── Install the real CLI binary ──────────────────────────────────────────
   # PRIMARY: ~/.helios-cli/helios (survives macOS upgrades — Tahoe 26 wipes /usr/local)
@@ -1203,7 +1203,7 @@ update_pi_cli() {
   fi
 
   local current_ver
-  current_ver=$("$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  current_ver=$(timeout 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
 
@@ -1530,7 +1530,7 @@ snapshot_state() {
   local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
   local pi_version agent_sha timestamp
 
-  pi_version=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  pi_version=$(timeout 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   if [[ -d "$PI_AGENT_DIR/.git" ]]; then
     agent_sha=$(git -C "$PI_AGENT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -1554,7 +1554,7 @@ verify_update() {
 
   # Check 1: helios --version responds and returns a version string
   local pi_ver
-  if pi_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
+  if pi_ver=$(timeout 15 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
     success "Helios CLI responds: $pi_ver"
   else
     error "Helios CLI check failed — cannot get version"
@@ -1818,11 +1818,6 @@ install_packages() {
       }
     fi
 
-    # Run update for npm packages only (local packages are skipped by Pi)
-    STEP_TIMEOUT="$PACKAGE_SYNC_TIMEOUT" run_with_spinner "Syncing npm packages" "${cli_cmd[@]}" update || {
-      warn "helios update had issues, but bundled packages are available"
-      return 0
-    }
     success "Helios packages installed"
   else
     info "Downloading packages — this may take 2-3 minutes"
@@ -2161,7 +2156,7 @@ setup_helios_browse() {
   step "Helios Browse (Browser Automation)"
 
   # Install playwright-core if not present
-  if node -e "require('playwright-core')" 2>/dev/null; then
+  if timeout 10 node -e "require('playwright-core')" 2>/dev/null; then
     success "playwright-core available"
   else
     run_with_spinner "Installing playwright-core" \

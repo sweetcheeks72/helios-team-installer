@@ -946,7 +946,7 @@ install_pi() {
 
   if [[ -n "$real_cli" ]]; then
     local cli_ver
-    cli_ver=$(timeout 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+    cli_ver=$(_timeout_cmd 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
     success "Helios CLI binary already installed: $cli_ver ($real_cli)"
     PI_INSTALLED=true
     return 0
@@ -1136,7 +1136,7 @@ install_pi() {
     return 1
   fi
   local installed_ver
-  installed_ver=$(timeout 10 "$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  installed_ver=$(_timeout_cmd 10 "$pi_binary" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   # ── Install the real CLI binary ──────────────────────────────────────────
   # PRIMARY: ~/.helios-cli/helios (survives macOS upgrades — Tahoe 26 wipes /usr/local)
@@ -1205,7 +1205,7 @@ update_pi_cli() {
   fi
 
   local current_ver
-  current_ver=$(timeout 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  current_ver=$(_timeout_cmd 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
   info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
 
@@ -1330,24 +1330,26 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_checksum"
 
-    rm -rf "$PI_AGENT_DIR"
-    mkdir -p "$PI_AGENT_DIR"
-    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
-      warn "Tarball extraction failed"
-      mkdir -p "$PI_AGENT_DIR"
-      for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
-        [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-      done
-      rm -rf "$tmp_stash" "$tmp_tarball"
+    # Extract to temp dir first (atomic swap prevents broken state on interrupt)
+    local tmp_extract
+    tmp_extract="$(mktemp -d)"
+    if ! tar -xzf "$tmp_tarball" -C "$tmp_extract" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
+      warn "Tarball extraction failed — keeping existing install"
+      rm -rf "$tmp_extract" "$tmp_stash" "$tmp_tarball"
       return 0
     fi
     rm -f "$tmp_tarball"
+
+    # Swap: old dir → trash, new dir → PI_AGENT_DIR
+    local trash_dir="${PI_AGENT_DIR}.old-$(date +%s)"
+    mv "$PI_AGENT_DIR" "$trash_dir" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
+    mv "$tmp_extract" "$PI_AGENT_DIR"
 
     # Restore user files
     for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
     done
-    rm -rf "$tmp_stash"
+    rm -rf "$tmp_stash" "$trash_dir"
 
     # Migrate preserved settings.json from git: (clone) to git/ (local path)
     _migrate_settings_packages
@@ -1402,15 +1404,17 @@ setup_helios_agent() {
   rm -f "$tmp_checksum"
 
   mkdir -p "$HOME/.pi"
-  rm -rf "$PI_AGENT_DIR"
-  mkdir -p "$PI_AGENT_DIR"
-  if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
+  local tmp_extract
+  tmp_extract="$(mktemp -d)"
+  if ! tar -xzf "$tmp_tarball" -C "$tmp_extract" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
     warn "Tarball extraction failed — skipping helios-agent install"
-    rm -rf "$PI_AGENT_DIR" "$tmp_tarball" "$tmp_checksum"
+    rm -rf "$tmp_extract" "$tmp_tarball"
     return 1
   fi
+  rm -f "$tmp_tarball"
 
-  rm -f "$tmp_tarball" "$tmp_checksum"
+  rm -rf "$PI_AGENT_DIR"
+  mv "$tmp_extract" "$PI_AGENT_DIR"
   success "Helios agent installed to $PI_AGENT_DIR"
 
   # Ensure VERSION file exists (tarball may be missing it)
@@ -1431,7 +1435,7 @@ snapshot_state() {
   local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
   local pi_version agent_version timestamp
 
-  pi_version=$(timeout 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+  pi_version=$(_timeout_cmd 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
   agent_version=$(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo "unknown")
   timestamp=$(date +%s)
 
@@ -1528,7 +1532,7 @@ rollback_update() {
   # Roll back Helios CLI if version differs
   if [[ "$saved_pi_version" != "unknown" ]]; then
     local current_ver
-    current_ver=$(timeout 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+    current_ver=$(_timeout_cmd 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
     if [[ "$current_ver" != "$saved_pi_version" ]]; then
       info "Rolling back Helios CLI: $current_ver → $saved_pi_version"
       if npm install -g "@helios-agent/cli@${saved_pi_version}" 2>/dev/null; then

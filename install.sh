@@ -450,7 +450,7 @@ npm_install_with_recovery() {
 
   # First attempt
   if run_with_spinner "$label" \
-    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'; then
+    _timeout_cmd 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'; then
     return 0
   fi
 
@@ -479,7 +479,7 @@ npm_install_with_recovery() {
   # Retry
   info "Retrying $label after cache repair..."
   run_with_spinner "$label (retry)" \
-    timeout 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'
+    _timeout_cmd 300 env NPM_DIR="$dir" bash -c 'cd "$NPM_DIR" && npm install --production --legacy-peer-deps --no-audit --no-fund --prefer-offline '$extra_flags' 2>&1'
 }
 
 # Verify SHA256 checksum of a file against a checksum file.
@@ -624,6 +624,7 @@ OLLAMA_TIMEOUT="${OLLAMA_TIMEOUT:-300}"
 NODE_INSTALL_TIMEOUT="${NODE_INSTALL_TIMEOUT:-300}"
 NPM_INSTALL_TIMEOUT="${NPM_INSTALL_TIMEOUT:-300}"
 PACKAGE_SYNC_TIMEOUT="${PACKAGE_SYNC_TIMEOUT:-600}"
+OFFLINE_MODE="${OFFLINE_MODE:-false}"
 
 check_prerequisites() {
   step "Prerequisites (auto-installing missing dependencies)"
@@ -775,7 +776,7 @@ check_prerequisites() {
     success "bun $(bun --version)"
   else
     info "Installing Bun runtime..."
-    if timeout 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
+    if _timeout_cmd 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
       export PATH="$HOME/.bun/bin:$PATH"
       hash -r 2>/dev/null || true
       if command -v bun &>/dev/null; then
@@ -1125,7 +1126,7 @@ install_pi() {
   chmod +x "$pi_binary"
 
   # ── Verify binary runs ──────────────────────────────────────────────────
-  if ! timeout 15 "$pi_binary" --version &>/dev/null; then
+  if ! _timeout_cmd 15 "$pi_binary" --version &>/dev/null; then
     local bin_arch
     bin_arch=$(file "$pi_binary" 2>/dev/null || echo "unknown")
     error "CLI binary exists but won't execute"
@@ -1291,8 +1292,12 @@ setup_helios_agent() {
     rm -f "$tmp_version"
 
     if [[ "$local_version" == "$remote_version" ]]; then
-      success "Helios agent is already up to date ($local_version)"
-      return 0
+      # Verify install is healthy before declaring up-to-date
+      if [[ -d "$PI_AGENT_DIR/node_modules" ]] && [[ -d "$PI_AGENT_DIR/extensions" ]] && [[ -f "$PI_AGENT_DIR/bin/helios" ]]; then
+        success "Helios agent is already up to date ($local_version)"
+        return 0
+      fi
+      info "Version matches but install appears incomplete — re-extracting..."
     fi
 
     info "Update available: $local_version → $remote_version — downloading…"
@@ -1442,7 +1447,7 @@ verify_update() {
 
   # Check 1: helios --version responds and returns a version string
   local pi_ver
-  if pi_ver=$(timeout 15 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
+  if pi_ver=$(_timeout_cmd 15 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) && [[ -n "$pi_ver" ]]; then
     success "Helios CLI responds: $pi_ver"
   else
     error "Helios CLI check failed — cannot get version"
@@ -1690,7 +1695,7 @@ install_packages() {
       if [[ -f "${pkg_dir}package.json" ]] && [[ ! -d "${pkg_dir}node_modules" ]]; then
         local pkg_name
         pkg_name="$(basename "$pkg_dir")"
-        run_with_spinner "npm install: $pkg_name" timeout 120 npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
+        run_with_spinner "npm install: $pkg_name" npm install --prefix "$pkg_dir" --production --legacy-peer-deps --no-audit --no-fund 2>>"${LOG_FILE:-/dev/null}" || {
           warn "npm install failed for $pkg_name — may work without it"
         }
       elif [[ -d "${pkg_dir}node_modules" ]]; then
@@ -1867,7 +1872,7 @@ install_agent_deps() {
 
   _better_sqlite3_ok() {
     [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]] || return 0
-    timeout 15 node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
+    _timeout_cmd 15 node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
   }
 
   _repair_better_sqlite3() {
@@ -1886,7 +1891,7 @@ install_agent_deps() {
         bash -c "cd '$bs3_dir' && node node_modules/prebuild-install/bin.js --runtime napi 2>&1" || true
     else
       run_with_spinner "Download better-sqlite3 prebuild" \
-        bash -c "cd '$PI_AGENT_DIR' && timeout 60 npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
+        bash -c "cd '$PI_AGENT_DIR' && npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
     fi
 
     if _better_sqlite3_ok; then
@@ -1902,7 +1907,7 @@ install_agent_deps() {
     fi
 
     run_with_spinner "Rebuild better-sqlite3 from source" \
-      bash -c "cd '$PI_AGENT_DIR' && timeout 120 npm rebuild better-sqlite3 --build-from-source 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source 2>&1" || {
       warn "better-sqlite3 rebuild failed"
     }
 
@@ -1914,7 +1919,7 @@ install_agent_deps() {
     # Attempt 3: full reinstall
     rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
     run_with_spinner "Reinstall better-sqlite3" \
-      bash -c "cd '$PI_AGENT_DIR' && timeout 120 npm install better-sqlite3 --no-audit --no-fund 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund 2>&1" || {
       warn "better-sqlite3 reinstall failed"
       return 1
     }
@@ -1951,7 +1956,7 @@ install_agent_deps() {
       # After native modules check passes, also verify ESM import works
       local esm_ok=true
       if [[ -f "$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js" ]]; then
-        timeout 30 node --input-type=module -e "
+        _timeout_cmd 30 node --input-type=module -e "
           import { pathToFileURL } from 'url';
           await import(pathToFileURL('$PI_AGENT_DIR/node_modules/@helios-agent/pi-coding-agent/dist/index.js'));
         " 2>/dev/null || esm_ok=false
@@ -2045,7 +2050,7 @@ setup_helios_browse() {
   step "Helios Browse (Browser Automation)"
 
   # Install playwright-core if not present
-  if timeout 10 node -e "require('playwright-core')" 2>/dev/null; then
+  if _timeout_cmd 10 node -e "require('playwright-core')" 2>/dev/null; then
     success "playwright-core available"
   else
     run_with_spinner "Installing playwright-core" \
@@ -3642,6 +3647,11 @@ main() {
     if type clear_checkpoint &>/dev/null; then
       clear_checkpoint
     fi
+    # Quick network probe for update mode
+    if ! curl -fsSL --connect-timeout 5 --max-time 10 https://registry.npmjs.org/ -o /dev/null 2>/dev/null; then
+      OFFLINE_MODE=true
+      warn "Network unreachable — using bundled deps only"
+    fi
     # Lightweight prereq check for update mode
     if ! command -v node &>/dev/null; then
       error "Node.js not found — required for update. Install: https://nodejs.org"
@@ -3654,7 +3664,7 @@ main() {
     # Ensure bun is available (CLI binary requires it for package resolution)
     if ! command -v bun &>/dev/null; then
       info "Installing Bun (required by Helios CLI)..."
-      if timeout 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
+      if _timeout_cmd 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
         export PATH="$HOME/.bun/bin:$PATH"
         hash -r 2>/dev/null || true
         if command -v bun &>/dev/null; then

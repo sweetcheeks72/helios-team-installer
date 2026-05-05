@@ -2979,64 +2979,57 @@ setup_familiar() {
     return 0
   fi
 
+  if [[ -d "$FAMILIAR_DIR" ]] && [[ -f "$FAMILIAR_DIR/VERSION" ]]; then
+    local local_ver
+    local_ver="$(cat "$FAMILIAR_DIR/VERSION" 2>/dev/null || echo "0")"
+    local remote_ver
+    remote_ver="$(curl -fsSL --max-time 15 "$HELIOS_RELEASE_URL/familiar-VERSION" 2>/dev/null || echo "")"
+    if [[ -n "$remote_ver" && "$local_ver" == "$remote_ver" ]]; then
+      success "Familiar already up to date ($local_ver)"
+      return 0
+    fi
+    if [[ -n "$remote_ver" ]]; then
+      info "Familiar update available: $local_ver → $remote_ver"
+    fi
+  fi
+
+  info "Downloading Familiar runtime tarball..."
+  local tmp_tarball
+  tmp_tarball="$(mktemp)"
+  if ! curl -fSL --retry 3 --retry-delay 5 --max-time 300 \
+       -o "$tmp_tarball" "$HELIOS_RELEASE_URL/familiar-latest.tar.gz" 2>>"${LOG_FILE:-/dev/null}"; then
+    warn "Could not download Familiar tarball"
+    rm -f "$tmp_tarball"
+    INSTALL_WARNINGS+=("Familiar skills skipped — download failed")
+    return 0
+  fi
+
+  local tarball_size
+  tarball_size=$(wc -c < "$tmp_tarball" 2>/dev/null || echo "0")
+  if [[ "$tarball_size" -lt 1048576 ]]; then
+    warn "Familiar tarball suspiciously small (${tarball_size} bytes) — skipping"
+    rm -f "$tmp_tarball"
+    return 0
+  fi
+
   if [[ -d "$FAMILIAR_DIR" ]]; then
-    if [[ -d "$FAMILIAR_DIR/.git" ]]; then
-      info "~/.familiar/ already exists — pulling latest"
-      run_with_spinner "Updating familiar" \
-        git -C "$FAMILIAR_DIR" pull --rebase --autostash || warn "Could not pull familiar"
-      return 0
-    fi
+    local backup_dir="${FAMILIAR_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp -a "$FAMILIAR_DIR" "$backup_dir" 2>/dev/null || true
+    rm -rf "$FAMILIAR_DIR"
   fi
 
-  info "Cloning Familiar → ~/.familiar/"
-  echo ""
-  ask "Proceed with clone? [y/N]:"
-  read -t 120 -r confirm_familiar || confirm_familiar=""
-  if [[ ! "$confirm_familiar" =~ ^[Yy]$ ]]; then
-    warn "Familiar setup skipped"
+  mkdir -p "$FAMILIAR_DIR"
+  if ! tar -xzf "$tmp_tarball" -C "$FAMILIAR_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
+    warn "Familiar tarball extraction failed"
+    if [[ -d "${backup_dir:-}" ]]; then
+      mv "$backup_dir" "$FAMILIAR_DIR"
+    fi
+    rm -f "$tmp_tarball"
     return 0
   fi
+  rm -f "$tmp_tarball"
 
-  # Check GitHub auth for private repo access
-  if ! gh auth status &>/dev/null 2>&1; then
-    warn "Familiar is a private repo — GitHub authentication required"
-    ask "Run 'gh auth login' now? [Y/n]:"
-    read -t 120 -r do_gh_auth || do_gh_auth=""
-    do_gh_auth="${do_gh_auth:-y}"
-    if [[ "$do_gh_auth" =~ ^[Yy]$ ]]; then
-      gh auth login || { warn "GitHub auth failed — skipping Familiar"; return 0; }
-    else
-      info "Skipping Familiar — run 'gh auth login' later, then clone manually"
-      return 0
-    fi
-  fi
-
-  if ! retry_with_backoff 3 5 git clone --single-branch --depth 1 "https://$FAMILIAR_REPO.git" "$FAMILIAR_DIR" 2>&1; then
-    warn "Could not clone Familiar (repository may require authentication)"
-    info "To install Familiar later: gh auth login && git clone https://$FAMILIAR_REPO.git ~/.familiar"
-    info "Familiar enables Gmail, Calendar, and Drive skills — it's optional."
-    INSTALL_WARNINGS+=("Familiar skills skipped — repo requires GitHub authentication")
-    return 0
-  fi
-  success "Familiar cloned to $FAMILIAR_DIR"
-
-  # Check if Familiar needs dependency installation
-  if [[ -f "$FAMILIAR_DIR/pnpm-lock.yaml" ]]; then
-    if command -v pnpm &>/dev/null; then
-      ask "Run pnpm install for Familiar dependencies? [y/N]:"
-      read -t 120 -r run_pnpm || run_pnpm=""
-      if [[ "$run_pnpm" =~ ^[Yy]$ ]]; then
-        run_with_spinner "Installing Familiar dependencies" \
-          pnpm --dir "$FAMILIAR_DIR" install || warn "pnpm install had issues"
-      fi
-    else
-      warn "pnpm not found — Familiar skills may need manual setup: cd ~/.familiar && pnpm install"
-    fi
-  fi
-
-  echo ""
-  info "NOTE: Google Workspace skills (Gmail, Calendar, Drive) require OAuth setup."
-  info "See: ~/.familiar/skills/gmcli/SKILL.md for OAuth configuration instructions."
+  success "Familiar installed to $FAMILIAR_DIR"
 }
 
 # ─── Deduplicate Skills & Extensions ──────────────────────────────────────────

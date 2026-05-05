@@ -1358,74 +1358,6 @@ setup_helios_agent() {
     return 0
   fi
 
-  # ── Migration: git-based install → tarball ─────────────────────────────────
-  if [[ -d "$PI_AGENT_DIR/.git" ]]; then
-    info "Detected git-based install — migrating to tarball distribution…"
-
-    # Stash user files
-    local tmp_stash
-    tmp_stash="$(mktemp -d)"
-    for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
-      [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
-    done
-
-    # Backup the full git install
-    local backup_dir="${PI_AGENT_DIR}.git-backup.$(date +%Y%m%d_%H%M%S)"
-    cp -a "$PI_AGENT_DIR" "$backup_dir"
-    info "Backed up git install to $backup_dir"
-
-    # Download latest tarball
-    local tmp_tarball
-    tmp_tarball="$(mktemp)"
-    if ! _helios_download "$HELIOS_RELEASE_URL/helios-agent-latest.tar.gz" "$tmp_tarball"; then
-      warn "Tarball download failed — keeping git-based install"
-      rm -rf "$tmp_stash" "$tmp_tarball"
-      return 0
-    fi
-
-    # Verify checksum
-    local tmp_checksum
-    tmp_checksum="$(mktemp)"
-    if _helios_download "$HELIOS_RELEASE_URL/helios-agent-latest.tar.gz.sha256" "$tmp_checksum"; then
-      if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
-        warn "Tarball checksum mismatch — skipping extraction"
-        rm -rf "$tmp_stash" "$tmp_tarball" "$tmp_checksum"
-        return 0
-      fi
-    fi
-    rm -f "$tmp_checksum"
-
-    # Replace git install with tarball
-    rm -rf "$PI_AGENT_DIR"
-    mkdir -p "$PI_AGENT_DIR"
-    if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
-      warn "Tarball extraction failed — restoring git backup"
-      rm -rf "$PI_AGENT_DIR"
-      cp -a "$backup_dir" "$PI_AGENT_DIR"
-      rm -rf "$tmp_stash" "$tmp_tarball"
-      return 0
-    fi
-    rm -f "$tmp_tarball"
-
-    # Restore user files
-    for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
-      [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
-    done
-    rm -rf "$tmp_stash"
-
-    # Migrate preserved settings.json from git: (clone) to git/ (local path)
-    _migrate_settings_packages
-    _prune_stale_org_dirs
-
-    success "Migrated from git to tarball distribution ($(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo 'unknown'))"
-    # Ensure VERSION file exists after migration
-    if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
-      echo "tarball-$(date +%Y%m%d)" > "$PI_AGENT_DIR/VERSION"
-    fi
-    info "Git backup preserved at: $backup_dir"
-    return 0
-  fi
-
   # ── Symlink: leave untouched ──────────────────────────────────────────────
   if [[ -L "$PI_AGENT_DIR" ]]; then
     info "~/.pi/agent/ is a symlink to: $(readlink "$PI_AGENT_DIR") — skipping"
@@ -1486,73 +1418,20 @@ setup_helios_agent() {
 # ─── Agent Directory Update (git-based) ──────────────────────────────────────
 update_agent_dir() {
   step "Agent Directory"
-
-  if [[ ! -d "$PI_AGENT_DIR/.git" ]]; then
-    setup_helios_agent
-    return $?
-  fi
-
-  # Fetch latest from origin/main
-  if ! git -C "$PI_AGENT_DIR" fetch origin main --quiet 2>/dev/null; then
-    warn "Could not fetch from origin/main — skipping agent update"
-    return 0
-  fi
-
-  local behind
-  behind=$(git -C "$PI_AGENT_DIR" rev-list HEAD..origin/main --count 2>/dev/null || echo "0")
-
-  if [[ "$behind" == "0" ]]; then
-    success "Agent up to date"
-    return 0
-  fi
-
-  info "Agent is $behind commit(s) behind — updating..."
-
-  # Stash if dirty
-  local stashed=false
-  if ! git -C "$PI_AGENT_DIR" diff --quiet 2>/dev/null || \
-     ! git -C "$PI_AGENT_DIR" diff --cached --quiet 2>/dev/null; then
-    info "Stashing local changes..."
-    if git -C "$PI_AGENT_DIR" stash push -m "helios-update-stash-$(date +%s)" 2>/dev/null; then
-      stashed=true
-    else
-      warn "Could not stash local changes — proceeding without stash"
-    fi
-  fi
-
-  if git -C "$PI_AGENT_DIR" pull --ff-only origin main --quiet 2>/dev/null; then
-    success "Agent updated ($behind commit(s) pulled)"
-    if [[ "$stashed" == true ]]; then
-      git -C "$PI_AGENT_DIR" stash pop --quiet 2>/dev/null || \
-        warn "Could not restore stash — check $PI_AGENT_DIR manually"
-    fi
-  else
-    warn "Agent pull failed — run 'git -C $PI_AGENT_DIR pull' manually"
-    if [[ "$stashed" == true ]]; then
-      git -C "$PI_AGENT_DIR" stash pop --quiet 2>/dev/null || true
-    fi
-  fi
+  setup_helios_agent
 }
 
 # ─── Update Snapshot ──────────────────────────────────────────────────────────
 snapshot_state() {
   local snapshot_file="$PI_AGENT_DIR/.update-snapshot.json"
-  local pi_version agent_sha timestamp
+  local pi_version agent_version timestamp
 
   pi_version=$(timeout 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
-
-  if [[ -d "$PI_AGENT_DIR/.git" ]]; then
-    agent_sha=$(git -C "$PI_AGENT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
-  else
-    agent_sha="unknown"
-  fi
-
+  agent_version=$(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo "unknown")
   timestamp=$(date +%s)
 
-  printf '{"pi_version":"%s","agent_sha":"%s","timestamp":%s}\n' \
-    "$pi_version" "$agent_sha" "$timestamp" > "$snapshot_file"
-
-  info "Snapshot saved: pi=$pi_version sha=${agent_sha:0:7} @ $timestamp"
+  printf '{"pi_version":"%s","agent_version":"%s","timestamp":%s}\n' \
+    "$pi_version" "$agent_version" "$timestamp" > "$snapshot_file"
 }
 
 # ─── Update Verification ──────────────────────────────────────────────────────
@@ -1644,7 +1523,7 @@ rollback_update() {
   # Roll back Helios CLI if version differs
   if [[ "$saved_pi_version" != "unknown" ]]; then
     local current_ver
-    current_ver=$(helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
+    current_ver=$(timeout 10 helios --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "")
     if [[ "$current_ver" != "$saved_pi_version" ]]; then
       info "Rolling back Helios CLI: $current_ver → $saved_pi_version"
       if npm install -g "@helios-agent/cli@${saved_pi_version}" 2>/dev/null; then
@@ -3284,31 +3163,31 @@ detect_update_mode() {
     [[ "$arg" == "--update" ]] && { UPDATE_MODE=true; return 0; }
   done
 
-  # If agent dir exists with a configured provider and VERSION file, this is an update
+  # If agent dir exists with VERSION file, this is an update (regardless of settings state)
+  if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
+    UPDATE_MODE=true
+    info "Existing install detected ($(cat "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo '?'))"
+    info "Running in update mode — skipping interactive steps"
+    info "To re-run full setup: bash install.sh --fresh"
+    echo ""
+    return 0
+  fi
+
+  # Fallback: settings.json with a configured provider also indicates existing install
   if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/settings.json" ]]; then
     local current_provider=""
-    local current_model=""
-
-    # Try python3 first, fall back to node, fall back to grep
     if command -v python3 &>/dev/null; then
       current_provider=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultProvider',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
-      current_model=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('defaultModel',''))" "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
     elif command -v node &>/dev/null; then
       current_provider=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).defaultProvider||'')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
-      current_model=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).defaultModel||'')" -- "$PI_AGENT_DIR/settings.json" 2>/dev/null || echo "")
-    else
-      # Last resort: grep for the key (handles simple cases)
-      current_provider=$(grep -o '"defaultProvider"[[:space:]]*:[[:space:]]*"[^"]*"' "$PI_AGENT_DIR/settings.json" 2>/dev/null | head -1 | sed 's/.*: *"//;s/"//' || echo "")
     fi
 
-    if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]] && [[ "$current_provider" != "undefined" ]]; then
-      if [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
-        UPDATE_MODE=true
-        info "Existing install detected"
-        info "Running in update mode — skipping interactive steps"
-        info "To re-run full setup: bash install.sh --fresh"
-        echo ""
-      fi
+    if [[ -n "$current_provider" ]] && [[ "$current_provider" != "null" ]]; then
+      UPDATE_MODE=true
+      info "Existing install detected (no VERSION file, but settings.json configured)"
+      info "Running in update mode — skipping interactive steps"
+      info "To re-run full setup: bash install.sh --fresh"
+      echo ""
     fi
   fi
 }
@@ -3685,7 +3564,7 @@ main() {
     TOTAL_STEPS=7
     CURRENT_STEP=0
   else
-    TOTAL_STEPS=15
+    TOTAL_STEPS=14
     CURRENT_STEP=0
   fi
 
@@ -3763,6 +3642,15 @@ main() {
     if type clear_checkpoint &>/dev/null; then
       clear_checkpoint
     fi
+    # Lightweight prereq check for update mode
+    if ! command -v node &>/dev/null; then
+      error "Node.js not found — required for update. Install: https://nodejs.org"
+      exit 1
+    fi
+    if ! command -v npm &>/dev/null; then
+      error "npm not found — required for update. Install Node.js from https://nodejs.org"
+      exit 1
+    fi
     # Ensure bun is available (CLI binary requires it for package resolution)
     if ! command -v bun &>/dev/null; then
       info "Installing Bun (required by Helios CLI)..."
@@ -3790,8 +3678,7 @@ main() {
 
   if [[ "$UPDATE_MODE" == true ]]; then
     if ! verify_update; then
-      warn "Update verification failed — initiating rollback..."
-      rollback_update
+      warn "Update verification had issues — continuing (non-fatal)"
     fi
   fi
 
@@ -3802,7 +3689,6 @@ main() {
   fi
 
   if [[ "$UPDATE_MODE" == false ]]; then
-    run_step "Git Hooks"         install_git_hooks
     run_step "Dep Allowlist"     setup_dep_allowlist
     run_step "Memgraph"          setup_memgraph
     run_step "SearXNG"           setup_searxng

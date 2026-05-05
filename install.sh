@@ -770,6 +770,24 @@ check_prerequisites() {
     exit 1
   fi
 
+  # ── Bun (required by Helios CLI binary for package resolution) ─────────────
+  if command -v bun &>/dev/null; then
+    success "bun $(bun --version)"
+  else
+    info "Installing Bun runtime..."
+    if curl -fsSL https://bun.sh/install | bash >> "${LOG_FILE:-/dev/null}" 2>&1; then
+      export PATH="$HOME/.bun/bin:$PATH"
+      if command -v bun &>/dev/null; then
+        success "bun $(bun --version) installed"
+      else
+        warn "Bun installed but not in PATH — add ~/.bun/bin to PATH"
+      fi
+    else
+      warn "Bun installation failed — helios CLI may not resolve packages correctly"
+      warn "Install manually: curl -fsSL https://bun.sh/install | bash"
+    fi
+  fi
+
   # ── git ─────────────────────────────────────────────────────────────────────
   if _install_dep git git git; then
     success "git $(git --version | awk '{print $3}')"

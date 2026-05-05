@@ -1996,54 +1996,54 @@ install_agent_deps() {
   _repair_better_sqlite3() {
     local node_ver
     node_ver=$(node -p 'process.versions.node' 2>/dev/null || echo unknown)
+    info "Fetching better-sqlite3 prebuild for Node ${node_ver}..."
+
+    # Attempt 1: prebuild-install downloads the correct binary for this Node ABI
+    local bs3_dir="$PI_AGENT_DIR/node_modules/better-sqlite3"
+    if [[ -f "$bs3_dir/node_modules/prebuild-install/bin.js" ]]; then
+      run_with_spinner "Download better-sqlite3 prebuild" \
+        bash -c "cd '$bs3_dir' && node node_modules/prebuild-install/bin.js --runtime napi 2>&1" || true
+    else
+      run_with_spinner "Download better-sqlite3 prebuild" \
+        bash -c "cd '$PI_AGENT_DIR' && npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
+    fi
+
+    if _better_sqlite3_ok; then
+      success "better-sqlite3 prebuild installed for Node ${node_ver} ✓"
+      return 0
+    fi
+
+    # Attempt 2: npm rebuild from source (requires Xcode CLT)
     local node_major
     node_major=$(node -e 'console.log(parseInt(process.version.slice(1)))' 2>/dev/null || echo 0)
-    info "Repairing better-sqlite3 for Node ${node_ver} (major: ${node_major})..."
-
-    # Warn if Node version is beyond what we ship native binaries for
     if [[ "$node_major" -gt 22 ]]; then
-      warn "Node ${node_ver} is newer than the tarball's native modules (built for Node 22)"
-      warn "Attempting to compile from source — this requires Xcode CLT / build-essential"
+      warn "Node ${node_ver} is newer than supported — native modules may fail"
     fi
 
-    # Attempt 1: npm rebuild from source
-    run_with_spinner "Rebuild better-sqlite3" \
+    run_with_spinner "Rebuild better-sqlite3 from source" \
       bash -c "cd '$PI_AGENT_DIR' && timeout 120 npm rebuild better-sqlite3 --build-from-source 2>&1" || {
-      warn "better-sqlite3 rebuild failed — reinstalling package"
+      warn "better-sqlite3 rebuild failed"
     }
 
     if _better_sqlite3_ok; then
-      success "better-sqlite3 rebuilt for current Node ✓"
+      success "better-sqlite3 rebuilt for Node ${node_ver} ✓"
       return 0
     fi
 
-    # Attempt 2: Remove and reinstall with --build-from-source
+    # Attempt 3: full reinstall
     rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
-    info "Reinstalling better-sqlite3 with --build-from-source..."
-    (cd "$PI_AGENT_DIR" && timeout 120 npm install better-sqlite3 --build-from-source --no-audit --no-fund 2>&1) || {
-      warn "better-sqlite3 install --build-from-source failed"
-    }
-
-    if _better_sqlite3_ok; then
-      success "better-sqlite3 reinstalled for current Node ✓"
-      return 0
-    fi
-
-    # Attempt 3: Fall back to npm_install_with_recovery (lets npm pick prebuild)
-    rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
-    npm_install_with_recovery "$PI_AGENT_DIR" "npm install better-sqlite3" "better-sqlite3" || {
+    run_with_spinner "Reinstall better-sqlite3" \
+      bash -c "cd '$PI_AGENT_DIR' && timeout 120 npm install better-sqlite3 --no-audit --no-fund 2>&1" || {
       warn "better-sqlite3 reinstall failed"
       return 1
     }
 
     if _better_sqlite3_ok; then
-      success "better-sqlite3 reinstalled for current Node ✓"
+      success "better-sqlite3 reinstalled for Node ${node_ver} ✓"
       return 0
     fi
 
-    warn "better-sqlite3 still does not load after repair"
-    warn "Try: cd ~/.pi/agent && npm rebuild better-sqlite3 --build-from-source"
-    warn "Or install Node 22 LTS: brew install node@22 && brew link --overwrite node@22"
+    warn "better-sqlite3 does not load — try: cd ~/.pi/agent && npm rebuild better-sqlite3"
     return 1
   }
 

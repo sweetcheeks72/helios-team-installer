@@ -275,6 +275,10 @@ rm -rf "${STAGE_DIR}/extensions/format-preference/"
 find "${STAGE_DIR}/extensions" -name "*.test.ts" -delete 2>/dev/null || true
 find "${STAGE_DIR}/extensions" -name "*.bak" -delete 2>/dev/null || true
 
+# Strip pre-compiled native modules — they're ABI-version-specific.
+# The installer runs prebuild-install to download the correct binary for the target Node version.
+rm -rf "${STAGE_DIR}/node_modules/better-sqlite3/build" 2>/dev/null
+
 echo "✅ Cleanup complete"
 
 # ---------------------------------------------------------------------------

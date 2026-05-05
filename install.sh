@@ -1287,11 +1287,6 @@ setup_helios_agent() {
 
     info "Update available: $local_version → $remote_version — downloading…"
 
-    # Backup current install, preserving user files
-    local backup_dir="${PI_AGENT_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
-    cp -a "$PI_AGENT_DIR" "$backup_dir"
-    info "Backed up current agent to $backup_dir"
-
     # Stash user files before extraction
     local tmp_stash
     tmp_stash="$(mktemp -d)"
@@ -1313,9 +1308,8 @@ setup_helios_agent() {
     tmp_checksum="$(mktemp)"
     if _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
       if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
-        warn "Tarball checksum mismatch — skipping extraction"
+        warn "Tarball checksum mismatch — skipping update"
         rm -rf "$tmp_stash" "$tmp_tarball" "$tmp_checksum"
-        cp -a "$backup_dir" "$PI_AGENT_DIR"
         return 0
       fi
     fi
@@ -1324,9 +1318,11 @@ setup_helios_agent() {
     rm -rf "$PI_AGENT_DIR"
     mkdir -p "$PI_AGENT_DIR"
     if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
-      warn "Tarball extraction failed — restoring backup"
-      rm -rf "$PI_AGENT_DIR"
-      cp -a "$backup_dir" "$PI_AGENT_DIR"
+      warn "Tarball extraction failed"
+      mkdir -p "$PI_AGENT_DIR"
+      for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
+        [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
+      done
       rm -rf "$tmp_stash" "$tmp_tarball"
       return 0
     fi

@@ -96,8 +96,10 @@ fi
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
 # Reopen stdin from /dev/tty so interactive `read` commands work.
 if [[ ! -t 0 ]]; then
-  if [[ -e /dev/tty ]]; then
-    exec < /dev/tty || true
+  if [[ "${DRY_RUN:-false}" == "true" ]] || [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    : # dry-run/check mode doesn't need interactive stdin
+  elif [[ -e /dev/tty ]]; then
+    exec < /dev/tty 2>/dev/null || true
   else
     echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
     echo "  curl -fsSL https://raw.githubusercontent.com/helios-agi/helios-team-installer/main/bootstrap.sh -o /tmp/helios-bootstrap.sh && bash /tmp/helios-bootstrap.sh" >&2
@@ -927,6 +929,15 @@ check_network() {
 install_pi() {
   step "Helios CLI (tarball from helios-agi/helios-installer)"
 
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    if command -v helios &>/dev/null || [[ -f "$HOME/.helios-cli/helios" ]]; then
+      info "[dry-run] CLI binary already installed"
+    else
+      info "[dry-run] Would download Helios CLI binary"
+    fi
+    return 0
+  fi
+
   # Architecture:
   #   /usr/local/bin/helios  = REAL CLI binary (helios-agi fork of pi, from tarball)
   #   ~/.local/bin/helios    = symlink → wrapper (agent/bin/helios) [created by install_helios_cli]
@@ -1195,7 +1206,11 @@ install_pi() {
 update_pi_cli() {
   step "Helios CLI Update"
 
-  # Find the real CLI binary (not the wrapper)
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[dry-run] Would update Helios CLI binary"
+    return 0
+  fi
+
   local real_cli=""
   for loc in /usr/local/bin/helios "$HOME/.helios-cli/helios" /opt/homebrew/bin/helios; do
     if [[ -f "$loc" && ! -L "$loc" ]]; then
@@ -1250,6 +1265,15 @@ update_pi_cli() {
 # ─── Helios Agent (Tarball) ───────────────────────────────────────────────────
 setup_helios_agent() {
   step "Helios Agent (~/.pi/agent/)"
+
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
+      info "[dry-run] Agent installed: $(cat "$PI_AGENT_DIR/VERSION")"
+    else
+      info "[dry-run] Would download and install helios-agent tarball"
+    fi
+    return 0
+  fi
 
   # ── Helper: download a file, return non-zero on failure ──────────────────
   _helios_download() {
@@ -2037,6 +2061,11 @@ install_agent_deps() {
 install_skill_deps() {
   step "Skill-Graph Dependencies"
 
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[dry-run] Would install skill-graph dependencies"
+    return 0
+  fi
+
   local sg_dir="$PI_AGENT_DIR/skills/skill-graph/scripts"
   if [[ ! -d "$sg_dir" ]] || [[ ! -f "$sg_dir/package.json" ]]; then
     info "skill-graph/scripts not found — skipping"
@@ -2058,6 +2087,11 @@ install_skill_deps() {
 # ─── Helios Browse (Browser Automation) ───────────────────────────────────────
 setup_helios_browse() {
   step "Helios Browse (Browser Automation)"
+
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[dry-run] Would install playwright-core and Chromium"
+    return 0
+  fi
 
   # Install playwright-core if not present
   if _timeout_cmd 10 node -e "require('playwright-core')" 2>/dev/null; then
@@ -2105,6 +2139,11 @@ setup_helios_browse() {
 # ─── Governance Extension Dependencies ────────────────────────────────────────
 install_governance_deps() {
   step "Governance Extension Dependencies"
+
+  if [[ "${CHECK_ONLY:-false}" == "true" ]]; then
+    info "[dry-run] Would install governance deps"
+    return 0
+  fi
 
   local gov_dir="$PI_AGENT_DIR/extensions/helios-governance"
   if [[ ! -d "$gov_dir" ]] || [[ ! -f "$gov_dir/tsconfig.json" ]]; then

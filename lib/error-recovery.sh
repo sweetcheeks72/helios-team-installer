@@ -402,7 +402,16 @@ save_checkpoint() {
 # Echoes the last completed step number, or 0 if none.
 load_checkpoint() {
   if [ -f "$CHECKPOINT_FILE" ]; then
-    cat "$CHECKPOINT_FILE"
+    local content
+    content="$(cat "$CHECKPOINT_FILE")"
+    # Handle both plain number and JSON format
+    if echo "$content" | grep -qE '^\{'; then
+      echo "$content" | grep -oE '"step":[0-9]+' | grep -oE '[0-9]+' || echo 0
+    elif echo "$content" | grep -qE '^[0-9]+$'; then
+      echo "$content"
+    else
+      echo 0
+    fi
   else
     echo 0
   fi

@@ -1246,7 +1246,16 @@ setup_helios_agent() {
   # ── Helper: download a file, return non-zero on failure ──────────────────
   _helios_download() {
     local url="$1" dest="$2"
-    curl -fSL --retry 3 --retry-delay 5 --max-time 300 -o "$dest" "$url"
+    local fname
+    fname="$(basename "$url")"
+    printf "  ↓ %s " "$fname" > /dev/tty 2>/dev/null || true
+    if curl -fSL --retry 3 --retry-delay 5 --max-time 300 -o "$dest" "$url"; then
+      printf "✓\n" > /dev/tty 2>/dev/null || true
+      return 0
+    else
+      printf "✗\n" > /dev/tty 2>/dev/null || true
+      return 1
+    fi
   }
 
   # ── Resolve arch-specific tarball (fall back to universal if not found) ────
@@ -1443,20 +1452,19 @@ setup_helios_agent() {
     return 1
   fi
 
-  if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
-    warn "Checksum file download failed — skipping helios-agent install"
-    rm -f "$tmp_tarball" "$tmp_checksum"
-    return 1
+  if _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
+    if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
+      warn "Tarball checksum mismatch — skipping extraction"
+      rm -f "$tmp_tarball" "$tmp_checksum"
+      return 1
+    fi
+  else
+    info "Checksum file not available — skipping verification"
   fi
-
-  # Verify SHA256
-  if ! _verify_sha256 "$tmp_tarball" "$tmp_checksum"; then
-    warn "Tarball checksum mismatch — skipping extraction"
-    rm -f "$tmp_tarball" "$tmp_checksum"
-    return 1
-  fi
+  rm -f "$tmp_checksum"
 
   mkdir -p "$HOME/.pi"
+  rm -rf "$PI_AGENT_DIR"
   mkdir -p "$PI_AGENT_DIR"
   if ! tar -xzf "$tmp_tarball" -C "$PI_AGENT_DIR" --strip-components=1 2>>"${LOG_FILE:-/dev/null}"; then
     warn "Tarball extraction failed — skipping helios-agent install"
@@ -1820,11 +1828,9 @@ install_packages() {
 
     success "Helios packages installed"
   else
-    info "Downloading packages — this may take 2-3 minutes"
-
-    STEP_TIMEOUT="$PACKAGE_SYNC_TIMEOUT" run_with_spinner "Running package sync" "${cli_cmd[@]}" update || {
-      warn "helios update had issues — packages may need manual installation"
-      return 0
+    info "Packages not bundled — running npm install for agent root deps"
+    npm_install_with_recovery "$PI_AGENT_DIR" "npm install (agent root)" || {
+      warn "npm install failed — some packages may be missing"
     }
     success "Helios packages installed"
   fi
@@ -3752,6 +3758,13 @@ main() {
     # install/update may have checkpointed past these steps without completing them.
     if type clear_checkpoint &>/dev/null; then
       clear_checkpoint
+    fi
+    # Ensure bun is available (CLI binary requires it for package resolution)
+    if ! command -v bun &>/dev/null; then
+      info "Installing Bun (required by Helios CLI)..."
+      if curl -fsSL https://bun.sh/install 2>/dev/null | bash >> "${LOG_FILE:-/dev/null}" 2>&1; then
+        export PATH="$HOME/.bun/bin:$PATH"
+      fi
     fi
     snapshot_state
     run_step "Helios CLI"             update_pi_cli

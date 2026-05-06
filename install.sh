@@ -905,6 +905,9 @@ check_prerequisites() {
     fi
     echo ""
   fi
+
+  # Bump file descriptor limit (macOS default 256 is too low for npm)
+  ulimit -n 4096 2>/dev/null || ulimit -n 1024 2>/dev/null || true
 }
 
 # ─── Network connectivity check ──────────────────────────────────────────────
@@ -3185,6 +3188,22 @@ run_verification() {
     validate_settings "$PI_AGENT_DIR/settings.json" || all_ok=false
   fi
 
+  # Post-install smoke test: verify the binary actually starts in a clean env
+  if [[ "${CHECK_ONLY:-false}" != "true" ]] && [[ -f "$HOME/.helios-cli/helios" ]]; then
+    local smoke_result=""
+    smoke_result=$(env -i HOME="$HOME" PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      "$HOME/.helios-cli/helios" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
+    if [[ -n "$smoke_result" ]]; then
+      success "Smoke test: helios binary launches (v$smoke_result)"
+    else
+      warn "Smoke test: helios binary failed to start"
+      warn "This usually means 'bun' is not in PATH. Fix:"
+      warn "  1. Close this terminal and open a new one"
+      warn "  2. Or run: source ~/.zshrc"
+      all_ok=false
+    fi
+  fi
+
   echo ""
   if [[ "$all_ok" == "true" ]]; then
     echo -e "  ${GREEN}${BOLD}✓ Verification passed${RESET}"
@@ -3758,13 +3777,18 @@ main() {
     fi
     # Lightweight prereq check for update mode
     if ! command -v node &>/dev/null; then
-      error "Node.js not found — required for update. Install: https://nodejs.org"
-      exit 1
+      # Try sourcing nvm if available
+      [[ -s "$HOME/.nvm/nvm.sh" ]] && . "$HOME/.nvm/nvm.sh" 2>/dev/null
+      if ! command -v node &>/dev/null; then
+        error "Node.js not found — required for update. Install: https://nodejs.org"
+        exit 1
+      fi
     fi
     if ! command -v npm &>/dev/null; then
       error "npm not found — required for update. Install Node.js from https://nodejs.org"
       exit 1
     fi
+    ulimit -n 4096 2>/dev/null || ulimit -n 1024 2>/dev/null || true
     # Ensure bun is available (CLI binary requires it for package resolution)
     if ! command -v bun &>/dev/null; then
       info "Installing Bun (required by Helios CLI)..."

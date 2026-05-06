@@ -17,6 +17,11 @@ jobs:
         with:
           lfs: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
       - name: Resolve release tag
         id: resolve
         run: |
@@ -36,53 +41,182 @@ jobs:
           RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
           
           # Download the existing agent tarball (already on the release)
+          mkdir -p /tmp/dl
           gh release download "$RELEASE_TAG" --pattern "helios-agent-latest-darwin-arm64.tar.gz" --dir /tmp/dl || true
           
-          # If agent tarball doesn't exist, skip (it's already uploaded)
           if [[ ! -f /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz ]]; then
-            echo "Agent tarball not found on release — will build from scratch"
+            echo "::error::Agent tarball not found on release — cannot build package"
+            exit 1
           fi
           
           # Download CLI binaries from helios-installer
+          mkdir -p /tmp/cli
           gh release download --repo helios-agi/helios-installer --pattern "pi-darwin-arm64.tar.gz" --dir /tmp/cli
           gh release download --repo helios-agi/helios-installer --pattern "pi-darwin-x64.tar.gz" --dir /tmp/cli
           
-          mkdir -p /tmp/build-arm64 /tmp/build-x64
+          # Download fd binaries for both architectures
+          mkdir -p /tmp/fd
+          curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-aarch64-apple-darwin.tar.gz" -o /tmp/fd/fd-arm64.tar.gz
+          curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.2.0/fd-v10.2.0-x86_64-apple-darwin.tar.gz" -o /tmp/fd/fd-x64.tar.gz
+          tar xzf /tmp/fd/fd-arm64.tar.gz -C /tmp/fd/ && mv /tmp/fd/fd-v10.2.0-aarch64-apple-darwin/fd /tmp/fd/fd-arm64
+          tar xzf /tmp/fd/fd-x64.tar.gz -C /tmp/fd/ && mv /tmp/fd/fd-v10.2.0-x86_64-apple-darwin/fd /tmp/fd/fd-x64
           
-          # Extract agent
-          if [[ -f /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz ]]; then
-            tar xzf /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz --strip-components=1 -C /tmp/build-arm64
-            # Slim it down
-            cd /tmp/build-arm64
-            rm -rf governance/events*.jsonl brainv2/desktop-events*.jsonl dlq-archive/
-            # Strip non-darwin native prebuilds
-            for d in node_modules/koffi/build/koffi/*/; do
-              case "$(basename "$d")" in darwin_arm64|darwin_x64) ;; *) rm -rf "$d" ;; esac
-            done
-            for pkg in tree-sitter-typescript tree-sitter-javascript; do
-              if [[ -d "node_modules/$pkg/prebuilds" ]]; then
-                for d in "node_modules/$pkg/prebuilds"/*/; do
-                  case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
-                done
+          mkdir -p /tmp/build-arm64
+          
+          # Extract agent tarball
+          tar xzf /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz --strip-components=1 -C /tmp/build-arm64
+          cd /tmp/build-arm64
+          
+          # ─── SANITIZATION: Fix issues from machine-built tarball ───────────
+          
+          # 1. Remove macOS AppleDouble ._ metadata files
+          find . -name "._*" -delete 2>/dev/null || true
+          echo "✓ Removed ._ AppleDouble files"
+          
+          # 2. Remove git merge conflict marker files (*~HEAD)
+          find . -name "*~HEAD" -delete 2>/dev/null || true
+          echo "✓ Removed ~HEAD conflict markers"
+          
+          # 3. Fix absolute symlinks (point to /Users/... on build machine)
+          find . -type l | while read -r link; do
+            target=$(readlink "$link")
+            case "$target" in
+              /Users/*/\.pi/agent/*)
+                # Convert absolute path to relative
+                rel_target="${target#*/\.pi/agent/}"
+                link_dir=$(dirname "$link")
+                # Compute relative path from link location to target
+                rel_path=$(python3 -c "
+          import os.path
+          link_dir = os.path.normpath('$link_dir')
+          target = os.path.normpath('$rel_target')
+          print(os.path.relpath(target, link_dir))
+          ")
+                rm -f "$link"
+                ln -s "$rel_path" "$link"
+                echo "  Fixed: $link -> $rel_path"
+                ;;
+              /*)
+                echo "  WARNING: Unknown absolute symlink: $link -> $target"
+                ;;
+            esac
+          done
+          echo "✓ Fixed absolute symlinks"
+          
+          # 4. Verify critical symlink targets exist
+          find . -type l | while read -r link; do
+            if [[ ! -e "$link" ]]; then
+              echo "  WARNING: Broken symlink: $link -> $(readlink "$link")"
+              # If target doesn't exist but we can find it under helios-agi instead of sweetcheeks72:
+              target=$(readlink "$link")
+              fixed_target="${target//sweetcheeks72/helios-agi}"
+              link_dir=$(dirname "$link")
+              if [[ -e "$link_dir/$fixed_target" ]]; then
+                rm -f "$link"
+                ln -s "$fixed_target" "$link"
+                echo "  Auto-fixed: $link -> $fixed_target"
               fi
-            done
-            if [[ -d git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds ]]; then
-              for d in git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds/*/; do
+            fi
+          done
+          echo "✓ Verified symlinks"
+          
+          # 5. Create sessions/ placeholder (prevents ENOENT on first run)
+          mkdir -p sessions
+          echo '{}' > sessions/.gitkeep
+          echo "✓ Created sessions/ placeholder"
+          
+          # 6. Slim down: remove large non-essential files
+          rm -rf governance/events*.jsonl brainv2/desktop-events*.jsonl dlq-archive/
+          echo "✓ Removed large event logs"
+          
+          # 7. Strip non-darwin native prebuilds (keep darwin-arm64 + darwin-x64)
+          for d in node_modules/koffi/build/koffi/*/; do
+            case "$(basename "$d")" in darwin_arm64|darwin_x64) ;; *) rm -rf "$d" ;; esac
+          done
+          for pkg in tree-sitter tree-sitter-typescript tree-sitter-javascript; do
+            if [[ -d "node_modules/$pkg/prebuilds" ]]; then
+              for d in "node_modules/$pkg/prebuilds"/*/; do
                 case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
               done
             fi
-            cd -
+          done
+          if [[ -d git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds ]]; then
+            for d in git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds/*/; do
+              case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
+            done
+          fi
+          echo "✓ Stripped non-darwin prebuilds"
+          
+          # 8. Ensure better-sqlite3 has prebuilds for both archs (downloads from GH releases)
+          BS3_DIR="node_modules/better-sqlite3"
+          if [[ -d "$BS3_DIR" ]]; then
+            BS3_VER=$(node -p "require('./$BS3_DIR/package.json').version")
+            echo "better-sqlite3 version: $BS3_VER"
+            mkdir -p "$BS3_DIR/prebuilds/darwin-arm64" "$BS3_DIR/prebuilds/darwin-x64"
+            
+            # Download prebuilds from better-sqlite3 GitHub releases
+            for arch in arm64 x64; do
+              node_abi=$(node -p "process.versions.modules")  # e.g., 131 for Node 22
+              prebuild_url="https://github.com/nicobailon/better-sqlite3/releases/download/v${BS3_VER}/better-sqlite3-v${BS3_VER}-node-v${node_abi}-darwin-${arch}.tar.gz"
+              echo "  Downloading: darwin-${arch} (node ABI v${node_abi})..."
+              if curl -fsSL "$prebuild_url" -o "/tmp/bs3-${arch}.tar.gz" 2>/dev/null; then
+                tar xzf "/tmp/bs3-${arch}.tar.gz" -C "$BS3_DIR/prebuilds/darwin-${arch}/" 2>/dev/null || true
+                # prebuild-install tarballs extract to build/Release/better_sqlite3.node
+                if [[ -f "$BS3_DIR/prebuilds/darwin-${arch}/build/Release/better_sqlite3.node" ]]; then
+                  mv "$BS3_DIR/prebuilds/darwin-${arch}/build/Release/better_sqlite3.node" "$BS3_DIR/prebuilds/darwin-${arch}/better_sqlite3.node"
+                  rm -rf "$BS3_DIR/prebuilds/darwin-${arch}/build"
+                fi
+                echo "  ✓ darwin-${arch} prebuild ready"
+              else
+                # Try WiseLibs (upstream) if our fork doesn't have it
+                prebuild_url="https://github.com/WiseLibs/better-sqlite3/releases/download/v${BS3_VER}/better-sqlite3-v${BS3_VER}-node-v${node_abi}-darwin-${arch}.tar.gz"
+                echo "  Retrying from WiseLibs: darwin-${arch}..."
+                if curl -fsSL "$prebuild_url" -o "/tmp/bs3-${arch}.tar.gz" 2>/dev/null; then
+                  tar xzf "/tmp/bs3-${arch}.tar.gz" -C "$BS3_DIR/prebuilds/darwin-${arch}/" 2>/dev/null || true
+                  if [[ -f "$BS3_DIR/prebuilds/darwin-${arch}/build/Release/better_sqlite3.node" ]]; then
+                    mv "$BS3_DIR/prebuilds/darwin-${arch}/build/Release/better_sqlite3.node" "$BS3_DIR/prebuilds/darwin-${arch}/better_sqlite3.node"
+                    rm -rf "$BS3_DIR/prebuilds/darwin-${arch}/build"
+                  fi
+                  echo "  ✓ darwin-${arch} prebuild ready (from WiseLibs)"
+                else
+                  echo "  ⚠ Could not download prebuild for darwin-${arch}"
+                fi
+              fi
+            done
+            
+            # Also place the correct prebuild in build/Release/ for each arch package
+            # (bindings module looks here first)
+            mkdir -p "$BS3_DIR/build/Release"
+            echo "✓ better-sqlite3 prebuilds configured"
           fi
           
-          # Build helios package structure
+          cd -
+          
+          # ─── BUILD PACKAGE STRUCTURE ───────────────────────────────────────
+          
           mkdir -p /tmp/pkg-arm64/helios/{agent,cli/pi,installer}
           mkdir -p /tmp/pkg-x64/helios/{agent,cli/pi,installer}
           
-          # Copy agent (same for both archs — multi-arch prebuilds)
+          # Copy agent (same content for both — multi-arch prebuilds inside)
           if [[ -d /tmp/build-arm64 ]] && [[ "$(ls /tmp/build-arm64)" ]]; then
-            cp -a /tmp/build-arm64/* /tmp/pkg-arm64/helios/agent/
-            cp -a /tmp/build-arm64/* /tmp/pkg-x64/helios/agent/
+            cp -a /tmp/build-arm64/. /tmp/pkg-arm64/helios/agent/
+            cp -a /tmp/build-arm64/. /tmp/pkg-x64/helios/agent/
           fi
+          
+          # Set correct better-sqlite3 build/Release per architecture
+          # (bindings module loads from build/Release/better_sqlite3.node)
+          if [[ -f /tmp/pkg-arm64/helios/agent/node_modules/better-sqlite3/prebuilds/darwin-arm64/better_sqlite3.node ]]; then
+            cp /tmp/pkg-arm64/helios/agent/node_modules/better-sqlite3/prebuilds/darwin-arm64/better_sqlite3.node \
+               /tmp/pkg-arm64/helios/agent/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+          fi
+          if [[ -f /tmp/pkg-x64/helios/agent/node_modules/better-sqlite3/prebuilds/darwin-x64/better_sqlite3.node ]]; then
+            cp /tmp/pkg-x64/helios/agent/node_modules/better-sqlite3/prebuilds/darwin-x64/better_sqlite3.node \
+               /tmp/pkg-x64/helios/agent/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+          fi
+          
+          # Set correct fd binary per architecture
+          cp /tmp/fd/fd-arm64 /tmp/pkg-arm64/helios/agent/bin/fd && chmod +x /tmp/pkg-arm64/helios/agent/bin/fd
+          cp /tmp/fd/fd-x64 /tmp/pkg-x64/helios/agent/bin/fd && chmod +x /tmp/pkg-x64/helios/agent/bin/fd
           
           # Copy installer
           cp install.sh /tmp/pkg-arm64/helios/installer/
@@ -91,6 +225,10 @@ jobs:
           cp -a lib/ /tmp/pkg-x64/helios/installer/lib/ 2>/dev/null || true
           cp -a provider-configs/ /tmp/pkg-arm64/helios/installer/provider-configs/ 2>/dev/null || true
           cp -a provider-configs/ /tmp/pkg-x64/helios/installer/provider-configs/ 2>/dev/null || true
+          
+          # Copy bootstrap.sh for convenience
+          cp bootstrap.sh /tmp/pkg-arm64/helios/installer/bootstrap.sh 2>/dev/null || true
+          cp bootstrap.sh /tmp/pkg-x64/helios/installer/bootstrap.sh 2>/dev/null || true
           
           # Copy CLI binaries (arch-specific)
           tar xzf /tmp/cli/pi-darwin-arm64.tar.gz -C /tmp/pkg-arm64/helios/cli/
@@ -101,7 +239,7 @@ jobs:
           echo "$VERSION" > /tmp/pkg-arm64/helios/VERSION
           echo "$VERSION" > /tmp/pkg-x64/helios/VERSION
           
-          # Create tarballs
+          # Create tarballs (no ._ files on Linux, but be explicit)
           cd /tmp/pkg-arm64 && tar czf /tmp/helios-latest-darwin-arm64.tar.gz helios/
           cd /tmp/pkg-x64 && tar czf /tmp/helios-latest-darwin-x64.tar.gz helios/
           cp /tmp/helios-latest-darwin-arm64.tar.gz /tmp/helios-latest.tar.gz
@@ -112,7 +250,24 @@ jobs:
           sha256sum helios-latest-darwin-x64.tar.gz > helios-latest-darwin-x64.tar.gz.sha256
           sha256sum helios-latest.tar.gz > helios-latest.tar.gz.sha256
           
+          echo ""
+          echo "=== Final package sizes ==="
           ls -lh /tmp/helios-latest*.tar.gz
+          
+          echo ""
+          echo "=== Verification ==="
+          echo "arm64 better-sqlite3 prebuild:"
+          file /tmp/pkg-arm64/helios/agent/node_modules/better-sqlite3/build/Release/better_sqlite3.node 2>/dev/null || echo "  MISSING"
+          echo "x64 better-sqlite3 prebuild:"
+          file /tmp/pkg-x64/helios/agent/node_modules/better-sqlite3/build/Release/better_sqlite3.node 2>/dev/null || echo "  MISSING"
+          echo "arm64 fd:"
+          file /tmp/pkg-arm64/helios/agent/bin/fd
+          echo "x64 fd:"
+          file /tmp/pkg-x64/helios/agent/bin/fd
+          echo "sessions/ dir:"
+          ls -la /tmp/pkg-arm64/helios/agent/sessions/ | head -3
+          echo "Broken symlinks (should be 0):"
+          find /tmp/pkg-arm64/helios/agent -type l ! -exec test -e {} \; -print | wc -l
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

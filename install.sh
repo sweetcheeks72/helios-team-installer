@@ -201,10 +201,16 @@ case "${INST_ARCH}" in
   aarch64) INST_ARCH="arm64" ;;
   x86_64)  INST_ARCH="x64" ;;
 esac
-# Prefer arch-specific tarball; fall back to universal if the arch-specific one
-# is not available on the release server (e.g. older releases pre-multi-arch).
+# Rosetta detection: process may report arm64 but hardware is x64 (or vice versa)
+if [[ "$INST_OS" == "darwin" ]] && [[ "$INST_ARCH" == "arm64" ]]; then
+  if sysctl -n sysctl.proc_translated 2>/dev/null | grep -q 1; then
+    INST_ARCH="x64"
+  fi
+fi
 HELIOS_AGENT_TARBALL="helios-agent-latest-${INST_OS}-${INST_ARCH}.tar.gz"
 HELIOS_AGENT_TARBALL_UNIVERSAL="helios-agent-latest.tar.gz"
+HELIOS_PACKAGE_TARBALL="helios-latest-${INST_OS}-${INST_ARCH}.tar.gz"
+HELIOS_PACKAGE_TARBALL_UNIVERSAL="helios-latest.tar.gz"
 HELIOS_CLI_RELEASE_URL="https://github.com/helios-agi/helios-installer/releases/latest/download"
 FAMILIAR_REPO="github.com/helios-agi/familiar"
 PI_AGENT_DIR="$HOME/.pi/agent"
@@ -807,6 +813,36 @@ check_prerequisites() {
     fi
   fi
 
+  if command -v bun &>/dev/null; then
+    local bun_path bun_ver bun_major bun_minor
+    bun_path="$(command -v bun)"
+    # Snap-installed Bun has sandbox issues with package resolution
+    if [[ "$bun_path" == */snap/* ]]; then
+      warn "Bun is installed via snap — this causes package resolution failures"
+      warn "Remove with: sudo snap remove bun-js"
+      warn "Reinstall with: curl -fsSL https://bun.sh/install | bash"
+    fi
+    # Require Bun >= 1.1.0 (older versions have broken global install behavior)
+    bun_ver="$(bun --version 2>/dev/null || echo "0.0.0")"
+    bun_major="${bun_ver%%.*}"
+    bun_minor="${bun_ver#*.}"; bun_minor="${bun_minor%%.*}"
+    if [[ "$bun_major" -lt 1 ]] || { [[ "$bun_major" -eq 1 ]] && [[ "$bun_minor" -lt 1 ]]; }; then
+      warn "Bun $bun_ver is too old (need >= 1.1.0) — upgrading..."
+      if _timeout_cmd 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
+        hash -r 2>/dev/null || true
+        success "Bun upgraded to $(bun --version)"
+      else
+        warn "Bun upgrade failed — helios CLI may not work correctly"
+      fi
+    fi
+    # Ensure bun global install dir has package.json (prevents "bun pm bin -g" crash)
+    local bun_global_dir="$HOME/.bun/install/global"
+    if [[ ! -f "$bun_global_dir/package.json" ]]; then
+      mkdir -p "$bun_global_dir"
+      echo '{}' > "$bun_global_dir/package.json"
+    fi
+  fi
+
   # ── git ─────────────────────────────────────────────────────────────────────
   if _install_dep git git git; then
     success "git $(git --version | awk '{print $3}')"
@@ -1077,6 +1113,13 @@ install_pi() {
     fi
   fi
 
+  # Strategy 2.5: Local dist/ directory (bundled/offline installs)
+  if [[ "$download_ok" != true ]] && [[ -f "$INSTALLER_DIR/dist/$platform_tarball" ]]; then
+    cp "$INSTALLER_DIR/dist/$platform_tarball" "$tmp_dir/cli.tar.gz"
+    download_ok=true
+    info "Using bundled CLI binary from installer dist/"
+  fi
+
   # Strategy 3: gh release download (if user has repo access)
   if [[ "$download_ok" != true ]] && command -v gh &>/dev/null && gh auth status &>/dev/null 2>&1; then
     info "Trying gh CLI download (authenticated)..."
@@ -1329,7 +1372,7 @@ setup_helios_agent() {
     local fname
     fname="$(basename "$url")"
     printf "  ↓ %s " "$fname" > /dev/tty 2>/dev/null || true
-    if curl -fSL --retry 3 --retry-delay 5 --max-time 300 -o "$dest" "$url"; then
+    if curl -fSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 300 -o "$dest" "$url"; then
       printf "✓\n" > /dev/tty 2>/dev/null || true
       return 0
     else
@@ -1339,11 +1382,21 @@ setup_helios_agent() {
   }
 
   # ── Resolve arch-specific tarball (fall back to universal if not found) ────
-  if ! curl -fsSI --retry 3 --retry-delay 5 --max-time 30 "${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}" &>/dev/null; then
-    info "Arch-specific tarball not found (${HELIOS_AGENT_TARBALL}) — using universal tarball"
-    HELIOS_AGENT_TARBALL="${HELIOS_AGENT_TARBALL_UNIVERSAL}"
-  else
-    info "Using arch-specific tarball: ${HELIOS_AGENT_TARBALL}"
+  local _agent_url="${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL}"
+  local _agent_url_universal="${HELIOS_RELEASE_URL}/${HELIOS_AGENT_TARBALL_UNIVERSAL}"
+  if ! curl -fsSI --retry 2 --retry-delay 3 --max-time 15 "$_agent_url" &>/dev/null; then
+    info "Arch-specific tarball not found (${HELIOS_AGENT_TARBALL}) — trying universal"
+    if curl -fsSI --retry 2 --retry-delay 3 --max-time 15 "$_agent_url_universal" &>/dev/null; then
+      HELIOS_AGENT_TARBALL="${HELIOS_AGENT_TARBALL_UNIVERSAL}"
+    else
+      warn "Release server unreachable — will use local install if available"
+      if [[ -d "$PI_AGENT_DIR" ]] && [[ -f "$PI_AGENT_DIR/VERSION" ]]; then
+        info "Existing installation found ($(cat "$PI_AGENT_DIR/VERSION")) — keeping it"
+        return 0
+      fi
+      error "No existing installation and release server unreachable"
+      return 1
+    fi
   fi
 
   # ── Update path: ~/.pi/agent/ exists and has a VERSION file ──────────────
@@ -1391,9 +1444,14 @@ setup_helios_agent() {
     local tmp_tarball
     tmp_tarball="$(mktemp)"
     if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL" "$tmp_tarball"; then
-      warn "Tarball download failed — rolling back to existing version"
-      rm -rf "$tmp_stash" "$tmp_tarball"
-      return 0
+      if [[ -f "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL" ]]; then
+        info "Remote download failed — using bundled tarball"
+        cp "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL" "$tmp_tarball"
+      else
+        warn "Tarball download failed — rolling back to existing version"
+        rm -rf "$tmp_stash" "$tmp_tarball"
+        return 0
+      fi
     fi
 
     # Verify checksum
@@ -1465,9 +1523,17 @@ setup_helios_agent() {
   tmp_checksum="$(mktemp)"
 
   if ! _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL" "$tmp_tarball"; then
-    warn "Tarball download failed — skipping helios-agent install"
-    rm -f "$tmp_tarball" "$tmp_checksum"
-    return 1
+    if [[ -f "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL" ]]; then
+      info "Using bundled agent tarball from installer dist/"
+      cp "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL" "$tmp_tarball"
+    elif [[ -f "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL_UNIVERSAL" ]]; then
+      info "Using bundled universal agent tarball from installer dist/"
+      cp "$INSTALLER_DIR/dist/$HELIOS_AGENT_TARBALL_UNIVERSAL" "$tmp_tarball"
+    else
+      warn "Tarball download failed and no bundled copy available"
+      rm -f "$tmp_tarball" "$tmp_checksum"
+      return 1
+    fi
   fi
 
   if _helios_download "$HELIOS_RELEASE_URL/$HELIOS_AGENT_TARBALL.sha256" "$tmp_checksum"; then
@@ -1688,11 +1754,15 @@ install_helios_cli() {
     {
       echo ''
       echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
-      echo 'export PATH="$HOME/.local/bin:$PATH"'
+      echo 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
     } >> "$shell_rc"
     success "Added Helios PATH block to $(basename "$shell_rc")"
+  elif ! grep -q '\.bun/bin' "$shell_rc" 2>/dev/null; then
+    sed -i.bak 's|export PATH="\$HOME/\.local/bin:\$PATH"|export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"|' "$shell_rc"
+    rm -f "${shell_rc}.bak"
+    success "Updated Helios PATH block to include ~/.bun/bin"
   fi
-  export PATH="$HOME/.local/bin:$PATH"
+  export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
   info "Restart your terminal or run: source $(basename "$shell_rc")"
 
   # Also symlink fd if present and not already in PATH
@@ -1750,19 +1820,36 @@ install_packages() {
   fi
 
   if [[ ! -f "$PI_AGENT_DIR/settings.json" ]]; then
-    warn "settings.json not found — using Anthropic default"
-    cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
+    if [[ -d "$PI_AGENT_DIR" ]]; then
+      warn "settings.json not found — using Anthropic default"
+      cp "$INSTALLER_DIR/provider-configs/anthropic.json" "$PI_AGENT_DIR/settings.json"
+    else
+      warn "Agent dir missing ($PI_AGENT_DIR) — cannot create settings.json"
+      return 1
+    fi
   fi
 
   # Resolve the actual CLI binary — bypass the helios wrapper to avoid
   # infinite loop (wrapper's update calls install.sh which calls this function)
-  local cli_bin=""
-  cli_bin="$(npm prefix -g 2>/dev/null)/bin/helios" 2>/dev/null
-  if [[ ! -x "$cli_bin" ]] || grep -q "helios — AI operating layer" "$cli_bin" 2>/dev/null; then
-    cli_bin="$(npm prefix -g 2>/dev/null)/bin/pi" 2>/dev/null
+  local cli_bin="" npm_prefix=""
+  npm_prefix="$(npm prefix -g 2>/dev/null)" || npm_prefix=""
+  if [[ -n "$npm_prefix" ]] && [[ -d "$npm_prefix/bin" ]]; then
+    cli_bin="$npm_prefix/bin/helios"
+    if [[ ! -x "$cli_bin" ]] || grep -q "helios — AI operating layer" "$cli_bin" 2>/dev/null; then
+      cli_bin="$npm_prefix/bin/pi"
+    fi
+  fi
+  # Fallback: check known durable locations
+  if [[ ! -x "${cli_bin:-}" ]]; then
+    for _loc in "$HOME/.helios-cli/helios" /usr/local/bin/helios /opt/homebrew/bin/helios; do
+      if [[ -f "$_loc" && ! -L "$_loc" ]] && "$_loc" --version &>/dev/null; then
+        cli_bin="$_loc"
+        break
+      fi
+    done
   fi
   local -a cli_cmd
-  if [[ -x "$cli_bin" ]]; then
+  if [[ -x "${cli_bin:-}" ]]; then
     cli_cmd=("$cli_bin")
   else
     cli_cmd=(npx @helios-agent/cli)
@@ -2155,7 +2242,8 @@ setup_helios_browse() {
   fi
 
   # Install Chromium browser binary
-  if compgen -G "$HOME/.cache/ms-playwright/chromium-*" > /dev/null 2>&1; then
+  local pw_cache="${PLAYWRIGHT_BROWSERS_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright}"
+  if compgen -G "$pw_cache/chromium-*" > /dev/null 2>&1; then
     success "Chromium browser already installed"
   else
     run_with_spinner "Installing Chromium for browser automation" \
@@ -3789,6 +3877,14 @@ main() {
       else
         warn "Bun installation failed — CLI binary may not work correctly"
         warn "Install manually: curl -fsSL https://bun.sh/install | bash"
+      fi
+    fi
+    # Ensure bun global dir is usable (prevents "bun pm bin -g" crash on update)
+    if command -v bun &>/dev/null; then
+      local bun_global_dir="$HOME/.bun/install/global"
+      if [[ ! -f "$bun_global_dir/package.json" ]]; then
+        mkdir -p "$bun_global_dir"
+        echo '{}' > "$bun_global_dir/package.json"
       fi
     fi
     snapshot_state

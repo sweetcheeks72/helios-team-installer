@@ -1,6 +1,11 @@
 name: Upload Release Assets
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to upload to (default: latest)"
+        required: false
+        default: ""
 
 jobs:
   upload:
@@ -12,10 +17,23 @@ jobs:
         with:
           lfs: false
 
+      - name: Resolve release tag
+        id: resolve
+        run: |
+          if [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG=$(gh release view --repo ${{ github.repository }} --json tagName --jq '.tagName')
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved release tag: $(cat "$GITHUB_OUTPUT" | grep tag= | cut -d= -f2)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build slim tarballs
         run: |
           set -e
-          RELEASE_TAG="v2.5.5"
+          RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
           
           # Download the existing agent tarball (already on the release)
           gh release download "$RELEASE_TAG" --pattern "helios-agent-latest-darwin-arm64.tar.gz" --dir /tmp/dl || true
@@ -78,9 +96,10 @@ jobs:
           tar xzf /tmp/cli/pi-darwin-arm64.tar.gz -C /tmp/pkg-arm64/helios/cli/
           tar xzf /tmp/cli/pi-darwin-x64.tar.gz -C /tmp/pkg-x64/helios/cli/
           
-          # Copy VERSION
-          echo "2.5.5" > /tmp/pkg-arm64/helios/VERSION
-          echo "2.5.5" > /tmp/pkg-x64/helios/VERSION
+          # Write VERSION from release tag (strip leading v)
+          VERSION="${RELEASE_TAG#v}"
+          echo "$VERSION" > /tmp/pkg-arm64/helios/VERSION
+          echo "$VERSION" > /tmp/pkg-x64/helios/VERSION
           
           # Create tarballs
           cd /tmp/pkg-arm64 && tar czf /tmp/helios-latest-darwin-arm64.tar.gz helios/
@@ -99,7 +118,8 @@ jobs:
 
       - name: Delete stale assets
         run: |
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/v2.5.5 --jq '.id')
+          RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$RELEASE_TAG --jq '.id')
           for name in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
                       helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
             asset_id=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$name\") | .id" 2>/dev/null || true)
@@ -112,10 +132,11 @@ jobs:
 
       - name: Upload assets
         run: |
+          RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
           for f in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
                    helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
             echo "Uploading $f..."
-            gh release upload v2.5.5 "/tmp/$f" --repo ${{ github.repository }}
+            gh release upload "$RELEASE_TAG" "/tmp/$f" --repo ${{ github.repository }}
             sleep 2
             echo "✓ $f uploaded"
           done

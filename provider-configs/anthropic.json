@@ -47,7 +47,7 @@
     "git/github.com/helios-agi/pi-annotate",
     "git/github.com/helios-agi/pi-skill-palette",
     "git/github.com/helios-agi/pi-boomerang",
-    "git/github.com/helios-agi/searxng"
+    "git/github.com/helios-agi/helios-searxng"
   ],
   "extensions": [
     "~/.pi/agent/extensions/helios-tui.ts",

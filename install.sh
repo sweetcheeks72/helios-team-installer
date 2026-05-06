@@ -2075,13 +2075,13 @@ install_agent_deps() {
     local pbi_bin="$PI_AGENT_DIR/node_modules/prebuild-install/bin.js"
     if [[ -f "$pbi_bin" ]]; then
       run_with_spinner "Download better-sqlite3 prebuild" \
-        bash -c "cd '$bs3_dir' && node '$pbi_bin' --runtime napi 2>&1" || true
+        bash -c "cd '$bs3_dir' && node '$pbi_bin' --runtime node 2>&1" || true
     elif [[ -f "$bs3_dir/node_modules/prebuild-install/bin.js" ]]; then
       run_with_spinner "Download better-sqlite3 prebuild" \
-        bash -c "cd '$bs3_dir' && node node_modules/prebuild-install/bin.js --runtime napi 2>&1" || true
+        bash -c "cd '$bs3_dir' && node node_modules/prebuild-install/bin.js --runtime node 2>&1" || true
     else
       run_with_spinner "Download better-sqlite3 prebuild" \
-        bash -c "cd '$PI_AGENT_DIR' && npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime napi 2>&1" || true
+        bash -c "cd '$PI_AGENT_DIR' && npx --yes prebuild-install --cwd node_modules/better-sqlite3 --runtime node 2>&1" || true
     fi
 
     if _better_sqlite3_ok; then

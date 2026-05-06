@@ -2092,13 +2092,21 @@ install_agent_deps() {
     # Attempt 3: full reinstall
     rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
     run_with_spinner "Reinstall better-sqlite3" \
-      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund --build-from-source 2>&1" || {
       warn "better-sqlite3 reinstall failed"
-      return 1
     }
 
     if _better_sqlite3_ok; then
       success "better-sqlite3 reinstalled for Node ${node_ver} ✓"
+      return 0
+    fi
+
+    # Attempt 4: try with explicit --target flag matching current Node
+    run_with_spinner "Reinstall better-sqlite3 (explicit target)" \
+      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund --target_arch=$(uname -m | sed 's/arm64/arm64/;s/x86_64/x64/') 2>&1" || true
+
+    if _better_sqlite3_ok; then
+      success "better-sqlite3 installed with explicit target ✓"
       return 0
     fi
 
@@ -2187,9 +2195,19 @@ install_agent_deps() {
 
   if ! _better_sqlite3_ok; then
     _repair_better_sqlite3 || {
-      fail "better-sqlite3 native module"
-      INSTALL_WARNINGS+=("better-sqlite3 failed — graph cache disabled or unstable")
-      return 1
+      local node_major
+      node_major=$(node -e 'console.log(parseInt(process.version.slice(1)))' 2>/dev/null || echo 0)
+      if [[ "$node_major" -gt 22 ]]; then
+        warn "better-sqlite3 failed — Node $(node -v) is too new (prebuilt binaries only exist for Node ≤22)"
+        warn "Fix: install Node 22 LTS, then run: cd ~/.pi/agent && npm rebuild better-sqlite3"
+        if command -v brew &>/dev/null; then
+          warn "  brew install node@22 && brew link --overwrite node@22"
+        fi
+      else
+        warn "better-sqlite3 native module failed to build"
+        warn "Fix: cd ~/.pi/agent && npm rebuild better-sqlite3 --build-from-source"
+      fi
+      INSTALL_WARNINGS+=("better-sqlite3 failed — graph cache will be unavailable until Node ≤22 is installed")
     }
   fi
   

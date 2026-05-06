@@ -1767,15 +1767,22 @@ install_helios_cli() {
     else
       shell_rc="$HOME/.bashrc"
     fi
+  elif [[ "$SHELL" == */fish ]]; then
+    shell_rc="$HOME/.config/fish/config.fish"
   else
     shell_rc="$HOME/.zshrc"
   fi
+  mkdir -p "$(dirname "$shell_rc")" 2>/dev/null || true
   touch "$shell_rc" 2>/dev/null || true
+  local path_line='export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
+  if [[ "$SHELL" == */fish ]]; then
+    path_line='set -gx PATH $HOME/.bun/bin $HOME/.local/bin $PATH'
+  fi
   if ! grep -q 'HELIOS PATH' "$shell_rc" 2>/dev/null; then
     {
       echo ''
       echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
-      echo 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
+      echo "$path_line"
     } >> "$shell_rc"
     success "Added Helios PATH block to $(basename "$shell_rc")"
   elif ! grep -q '\.bun/bin' "$shell_rc" 2>/dev/null; then
@@ -1792,6 +1799,17 @@ install_helios_cli() {
         echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
         echo 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
       } >> "$HOME/.zprofile"
+    fi
+  fi
+  # Also write to .zshrc if we targeted .bash_profile (covers chsh users)
+  if [[ "$(uname -s)" == "Darwin" ]] && [[ "$shell_rc" != *zshrc ]] && [[ -f "$HOME/.zshrc" || "$SHELL" == */bash ]]; then
+    if ! grep -q 'HELIOS PATH' "$HOME/.zshrc" 2>/dev/null; then
+      touch "$HOME/.zshrc" 2>/dev/null || true
+      {
+        echo ''
+        echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
+        echo 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
+      } >> "$HOME/.zshrc"
     fi
   fi
   export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"

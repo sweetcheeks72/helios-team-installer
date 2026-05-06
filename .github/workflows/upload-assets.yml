@@ -1,0 +1,123 @@
+name: Upload Release Assets
+on:
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Build slim tarballs
+        run: |
+          set -e
+          RELEASE_TAG="v2.5.5"
+          
+          # Download the existing agent tarball (already on the release)
+          gh release download "$RELEASE_TAG" --pattern "helios-agent-latest-darwin-arm64.tar.gz" --dir /tmp/dl || true
+          
+          # If agent tarball doesn't exist, skip (it's already uploaded)
+          if [[ ! -f /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz ]]; then
+            echo "Agent tarball not found on release — will build from scratch"
+          fi
+          
+          # Download CLI binaries from helios-installer
+          gh release download --repo helios-agi/helios-installer --pattern "pi-darwin-arm64.tar.gz" --dir /tmp/cli
+          gh release download --repo helios-agi/helios-installer --pattern "pi-darwin-x64.tar.gz" --dir /tmp/cli
+          
+          mkdir -p /tmp/build-arm64 /tmp/build-x64
+          
+          # Extract agent
+          if [[ -f /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz ]]; then
+            tar xzf /tmp/dl/helios-agent-latest-darwin-arm64.tar.gz --strip-components=1 -C /tmp/build-arm64
+            # Slim it down
+            cd /tmp/build-arm64
+            rm -rf governance/events*.jsonl brainv2/desktop-events*.jsonl dlq-archive/
+            # Strip non-darwin native prebuilds
+            for d in node_modules/koffi/build/koffi/*/; do
+              case "$(basename "$d")" in darwin_arm64|darwin_x64) ;; *) rm -rf "$d" ;; esac
+            done
+            for pkg in tree-sitter-typescript tree-sitter-javascript; do
+              if [[ -d "node_modules/$pkg/prebuilds" ]]; then
+                for d in "node_modules/$pkg/prebuilds"/*/; do
+                  case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
+                done
+              fi
+            done
+            if [[ -d git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds ]]; then
+              for d in git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds/*/; do
+                case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
+              done
+            fi
+            cd -
+          fi
+          
+          # Build helios package structure
+          mkdir -p /tmp/pkg-arm64/helios/{agent,cli/pi,installer}
+          mkdir -p /tmp/pkg-x64/helios/{agent,cli/pi,installer}
+          
+          # Copy agent (same for both archs — multi-arch prebuilds)
+          if [[ -d /tmp/build-arm64 ]] && [[ "$(ls /tmp/build-arm64)" ]]; then
+            cp -a /tmp/build-arm64/* /tmp/pkg-arm64/helios/agent/
+            cp -a /tmp/build-arm64/* /tmp/pkg-x64/helios/agent/
+          fi
+          
+          # Copy installer
+          cp install.sh /tmp/pkg-arm64/helios/installer/
+          cp install.sh /tmp/pkg-x64/helios/installer/
+          cp -a lib/ /tmp/pkg-arm64/helios/installer/lib/ 2>/dev/null || true
+          cp -a lib/ /tmp/pkg-x64/helios/installer/lib/ 2>/dev/null || true
+          cp -a provider-configs/ /tmp/pkg-arm64/helios/installer/provider-configs/ 2>/dev/null || true
+          cp -a provider-configs/ /tmp/pkg-x64/helios/installer/provider-configs/ 2>/dev/null || true
+          
+          # Copy CLI binaries (arch-specific)
+          tar xzf /tmp/cli/pi-darwin-arm64.tar.gz -C /tmp/pkg-arm64/helios/cli/
+          tar xzf /tmp/cli/pi-darwin-x64.tar.gz -C /tmp/pkg-x64/helios/cli/
+          
+          # Copy VERSION
+          echo "2.5.5" > /tmp/pkg-arm64/helios/VERSION
+          echo "2.5.5" > /tmp/pkg-x64/helios/VERSION
+          
+          # Create tarballs
+          cd /tmp/pkg-arm64 && tar czf /tmp/helios-latest-darwin-arm64.tar.gz helios/
+          cd /tmp/pkg-x64 && tar czf /tmp/helios-latest-darwin-x64.tar.gz helios/
+          cp /tmp/helios-latest-darwin-arm64.tar.gz /tmp/helios-latest.tar.gz
+          
+          # Generate checksums
+          cd /tmp
+          sha256sum helios-latest-darwin-arm64.tar.gz > helios-latest-darwin-arm64.tar.gz.sha256
+          sha256sum helios-latest-darwin-x64.tar.gz > helios-latest-darwin-x64.tar.gz.sha256
+          sha256sum helios-latest.tar.gz > helios-latest.tar.gz.sha256
+          
+          ls -lh /tmp/helios-latest*.tar.gz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete stale assets
+        run: |
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/v2.5.5 --jq '.id')
+          for name in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
+                      helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
+            asset_id=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$name\") | .id" 2>/dev/null || true)
+            if [[ -n "$asset_id" ]]; then
+              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$asset_id" && echo "Deleted $name"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets
+        run: |
+          for f in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
+                   helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
+            echo "Uploading $f..."
+            gh release upload v2.5.5 "/tmp/$f" --repo ${{ github.repository }}
+            sleep 2
+            echo "✓ $f uploaded"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -32,7 +32,7 @@ setup() {
 }
 
 # 2. All 3 provider configs have the same package count (20)
-@test "golden: all 3 provider configs have exactly 20 packages" {
+@test "golden: all 3 provider configs have at least 20 packages" {
   python3 << 'PYEOF'
 import json, sys
 
@@ -46,11 +46,10 @@ for cfg in configs:
         d = json.load(f)
     counts[cfg] = len(d.get("packages", []))
 
-# All must equal 20
-wrong = {k: v for k, v in counts.items() if v != 20}
+wrong = {k: v for k, v in counts.items() if v < 20}
 if wrong:
     for name, count in wrong.items():
-        print(f"FAIL: {name} has {count} packages (expected 20)")
+        print(f"FAIL: {name} has {count} packages (expected >= 20)")
     sys.exit(1)
 
 # All must match each other

@@ -75,7 +75,8 @@ setup() {
 }
 
 @test "tarball excludes .disabled files" {
-  run bash -c "tar -tzf '${TARBALL}' | grep -q '\.disabled'"
+  # .disabled files in git packages are intentional (disabled extensions)
+  run bash -c "tar -tzf '${TARBALL}' | grep '\.disabled' | grep -v 'git/github.com/'"
   [ "$status" -ne 0 ]
 }
 

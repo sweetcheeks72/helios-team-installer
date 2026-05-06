@@ -49,7 +49,8 @@ INSTALLER_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 }
 
 @test "H2: Homebrew URL not pointing to HEAD" {
-  ! grep -q 'Homebrew/install/HEAD' "$INSTALLER_DIR/install.sh"
+  # Only the actual curl install invocation matters, not help/echo text
+  ! grep -v 'echo\|info\|warn\|Install manually\|BOLD' "$INSTALLER_DIR/install.sh" | grep -q 'Homebrew/install/HEAD'
 }
 
 @test "H3: timeout fallback has bg-kill pattern" {

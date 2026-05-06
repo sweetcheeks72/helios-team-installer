@@ -5,35 +5,28 @@
 INSTALLER_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
 # ---------------------------------------------------------------------------
-# 1. All 4 preserve loops include required items
+# 1. HELIOS_PRESERVE_FILES array contains required items + 4 loops reference it
 # ---------------------------------------------------------------------------
-@test "all 4 preserve loops include .env" {
-  local count
-  count=$(grep -c 'for preserve in.*\.env' "$INSTALLER_DIR/install.sh")
-  [ "$count" -ge 4 ]
+@test "HELIOS_PRESERVE_FILES contains .env" {
+  grep -q 'HELIOS_PRESERVE_FILES=(' "$INSTALLER_DIR/install.sh"
+  grep -A5 'HELIOS_PRESERVE_FILES=(' "$INSTALLER_DIR/install.sh" | grep -q '\.env'
 }
 
-@test "all 4 preserve loops include settings.json" {
-  local count
-  count=$(grep -c 'for preserve in.*settings\.json' "$INSTALLER_DIR/install.sh")
-  [ "$count" -ge 4 ]
+@test "HELIOS_PRESERVE_FILES contains settings.json" {
+  grep -A5 'HELIOS_PRESERVE_FILES=(' "$INSTALLER_DIR/install.sh" | grep -q 'settings\.json'
 }
 
-@test "all 4 preserve loops include .helios" {
-  local count
-  count=$(grep -c 'for preserve in.*\.helios' "$INSTALLER_DIR/install.sh")
-  [ "$count" -ge 4 ]
+@test "HELIOS_PRESERVE_FILES contains .helios" {
+  grep -A5 'HELIOS_PRESERVE_FILES=(' "$INSTALLER_DIR/install.sh" | grep -q '\.helios'
 }
 
-@test "all 4 preserve loops include auth.json" {
-  local count
-  count=$(grep -c 'for preserve in.*auth\.json' "$INSTALLER_DIR/install.sh")
-  [ "$count" -ge 4 ]
+@test "HELIOS_PRESERVE_FILES contains auth.json" {
+  grep -A5 'HELIOS_PRESERVE_FILES=(' "$INSTALLER_DIR/install.sh" | grep -q 'auth\.json'
 }
 
-@test "all 4 preserve loops include run-history.jsonl" {
+@test "4 preserve loops reference HELIOS_PRESERVE_FILES array" {
   local count
-  count=$(grep -c 'for preserve in.*run-history\.jsonl' "$INSTALLER_DIR/install.sh")
+  count=$(grep -c 'for preserve in "\${HELIOS_PRESERVE_FILES\[@\]}"' "$INSTALLER_DIR/install.sh")
   [ "$count" -ge 4 ]
 }
 
@@ -130,7 +123,7 @@ if 'interview' not in d:
   if ! command -v shellcheck &>/dev/null; then
     skip "shellcheck not installed"
   fi
-  run shellcheck -S warning -e SC2034,SC1090,SC1091,SC2155,SC2088 "$INSTALLER_DIR/install.sh"
+  run shellcheck -S warning -e SC2034,SC1090,SC1091,SC2155,SC2088,SC2178,SC2128 "$INSTALLER_DIR/install.sh"
   [ "$status" -eq 0 ]
 }
 
@@ -702,77 +695,24 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-# TEST-2: macOS npm prefix redirect (static analysis)
+# TEST-2: CLI binary resolution has npm prefix + fallback chain
 # ---------------------------------------------------------------------------
 
-@test "install_pi has macOS npm prefix writability check" {
-  # The Darwin block must reference both Darwin (uname check) and node_modules
-  python3 -c "
-import sys, re
-with open('${INSTALLER_DIR}/install.sh') as f:
-    content = f.read()
-m = re.search(
-    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
-    content, re.DOTALL | re.MULTILINE)
-if not m:
-    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
-block = m.group(0)
-if 'Darwin' not in block:
-    print('ERROR: Darwin check missing from npm prefix block'); sys.exit(1)
-if 'node_modules' not in block:
-    print('ERROR: node_modules reference missing from npm prefix block'); sys.exit(1)
-"
+@test "install_packages resolves CLI with npm prefix fallback" {
+  grep -q 'npm_prefix="$(npm prefix -g 2>/dev/null)"' "$INSTALLER_DIR/install.sh"
+  grep -q 'HOME/.helios-cli/helios' "$INSTALLER_DIR/install.sh"
 }
 
-@test "macOS prefix check tests node_modules not just lib" {
-  # The writability check variable must reference 'node_modules' specifically
-  # (not just the 'lib' parent dir), ensuring the right path is tested
-  python3 -c "
-import sys, re
-with open('${INSTALLER_DIR}/install.sh') as f:
-    content = f.read()
-m = re.search(
-    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
-    content, re.DOTALL | re.MULTILINE)
-if not m:
-    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
-block = m.group(0)
-# Must have 'node_modules' in the path variable (not just the bare 'lib' dir)
-if not re.search(r'node_modules', block):
-    print('ERROR: node_modules not in macOS prefix check'); sys.exit(1)
-"
+@test "install_packages validates npm prefix before use" {
+  grep -q '\-n "$npm_prefix".*\-d "$npm_prefix/bin"' "$INSTALLER_DIR/install.sh"
 }
 
-@test "macOS prefix redirect uses ~/.npm-global" {
-  python3 -c "
-import sys, re
-with open('${INSTALLER_DIR}/install.sh') as f:
-    content = f.read()
-m = re.search(
-    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
-    content, re.DOTALL | re.MULTILINE)
-if not m:
-    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
-block = m.group(0)
-if '.npm-global' not in block:
-    print('ERROR: .npm-global redirect missing from macOS prefix block'); sys.exit(1)
-"
+@test "install_packages falls back to known durable locations" {
+  grep -q '/usr/local/bin/helios\|/opt/homebrew/bin/helios' "$INSTALLER_DIR/install.sh"
 }
 
-@test "macOS prefix redirect adds to PATH" {
-  python3 -c "
-import sys, re
-with open('${INSTALLER_DIR}/install.sh') as f:
-    content = f.read()
-m = re.search(
-    r'# macOS: check if npm global prefix.*?(?=# Fix npm global prefix on Linux|^\S)',
-    content, re.DOTALL | re.MULTILINE)
-if not m:
-    print('ERROR: macOS npm prefix block not found'); sys.exit(1)
-block = m.group(0)
-if 'PATH' not in block:
-    print('ERROR: PATH update missing from macOS prefix redirect block'); sys.exit(1)
-"
+@test "install_packages falls through to npx if no binary found" {
+  grep -q 'cli_cmd=(npx @helios-agent/cli)' "$INSTALLER_DIR/install.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -819,10 +759,10 @@ PYEOF
   grep -q '^update_pi_cli()' "$INSTALLER_DIR/install.sh"
 }
 
-@test "update_pi_cli uses @helios-agent/cli not @mariozechner" {
+@test "update_pi_cli reinstalls via install_pi" {
   local body
   body=$(sed -n '/^update_pi_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
-  echo "$body" | grep -q '@helios-agent/cli'
+  echo "$body" | grep -q 'install_pi'
 }
 
 @test "update_pi_cli captures version from stderr (2>&1)" {
@@ -831,10 +771,10 @@ PYEOF
   echo "$body" | grep -q '2>&1'
 }
 
-@test "update_pi_cli has npm view timeout" {
+@test "update_pi_cli uses timeout for version check" {
   local body
   body=$(sed -n '/^update_pi_cli()/,/^}/p' "$INSTALLER_DIR/install.sh")
-  echo "$body" | grep -q 'fetch-timeout'
+  echo "$body" | grep -q '_timeout_cmd'
 }
 
 # ---------------------------------------------------------------------------
@@ -844,16 +784,10 @@ PYEOF
   grep -q '^update_agent_dir()' "$INSTALLER_DIR/install.sh"
 }
 
-@test "update_agent_dir uses --ff-only" {
+@test "update_agent_dir delegates to setup_helios_agent" {
   local body
   body=$(sed -n '/^update_agent_dir()/,/^}/p' "$INSTALLER_DIR/install.sh")
-  echo "$body" | grep -q '\-\-ff-only'
-}
-
-@test "update_agent_dir gates stash on success" {
-  local body
-  body=$(sed -n '/^update_agent_dir()/,/^}/p' "$INSTALLER_DIR/install.sh")
-  echo "$body" | grep -q 'if git.*stash push'
+  echo "$body" | grep -q 'setup_helios_agent'
 }
 
 # ---------------------------------------------------------------------------

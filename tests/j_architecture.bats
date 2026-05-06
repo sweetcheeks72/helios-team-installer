@@ -180,13 +180,13 @@ PYEOF
 # 1d. git/github.com/sweetcheeks72/ has >10 package dirs
 # ---------------------------------------------------------------------------
 
-@test "tarball: git/github.com/sweetcheeks72/ contains more than 10 package directories" {
+@test "tarball: git/github.com/helios-agi/ contains more than 10 package directories" {
   setup_tarball
   local top; top=$(_tarball_top)
   local count
-  count=$(tar -tzf "${TARBALL}" | grep -cE "^${top}/git/github\.com/sweetcheeks72/[^/]+/$" || true)
+  count=$(tar -tzf "${TARBALL}" | grep -cE "^${top}/git/github\.com/helios-agi/[^/]+/$" || true)
   if [[ "$count" -le 10 ]]; then
-    echo "FAIL: only ${count} package dirs in git/github.com/sweetcheeks72/ (expected >10)"
+    echo "FAIL: only ${count} package dirs in git/github.com/helios-agi/ (expected >10)"
     return 1
   fi
 }

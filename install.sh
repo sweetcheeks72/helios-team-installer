@@ -1759,9 +1759,9 @@ install_helios_cli() {
 
   # Add to PATH in shell profile if not already there
   local shell_rc
-  if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == */zsh ]]; then
+  if [[ "$SHELL" == */zsh ]]; then
     shell_rc="$HOME/.zshrc"
-  elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == */bash ]]; then
+  elif [[ "$SHELL" == */bash ]]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
       shell_rc="$HOME/.bash_profile"
     else
@@ -1782,6 +1782,17 @@ install_helios_cli() {
     sed -i.bak 's|export PATH="\$HOME/\.local/bin:\$PATH"|export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"|' "$shell_rc"
     rm -f "${shell_rc}.bak"
     success "Updated Helios PATH block to include ~/.bun/bin"
+  fi
+  # Also write to .zprofile (macOS zsh reads this for login shells like Terminal.app)
+  if [[ "$(uname -s)" == "Darwin" ]] && [[ "$shell_rc" == *zshrc ]]; then
+    if ! grep -q 'HELIOS PATH' "$HOME/.zprofile" 2>/dev/null; then
+      touch "$HOME/.zprofile" 2>/dev/null || true
+      {
+        echo ''
+        echo '# HELIOS PATH: keep Helios shims ahead of older npm/nvm pi installs'
+        echo 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"'
+      } >> "$HOME/.zprofile"
+    fi
   fi
   export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
   info "Restart your terminal or run: source $(basename "$shell_rc")"
@@ -3356,9 +3367,15 @@ print_quickstart() {
 
   # Ensure PATH is set for remainder of installer + user session
   if ! command -v helios &>/dev/null && [[ -f "$HOME/.local/bin/helios" ]]; then
-    export PATH="$HOME/.local/bin:$PATH"
+    export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
+    hash -r 2>/dev/null || true
+  fi
+  if ! command -v helios &>/dev/null; then
     echo ""
-    warn "Run 'source ~/.zshrc' (or restart terminal) for the 'helios' command to work"
+    echo -e "  ${YELLOW}${BOLD}⚠ IMPORTANT: Run this command now (or open a new terminal):${RESET}"
+    echo ""
+    echo -e "    ${BOLD}export PATH=\"\$HOME/.bun/bin:\$HOME/.local/bin:\$PATH\"${RESET}"
+    echo ""
   fi
   echo ""
   echo -e "  ${BOLD}Quick Start:${RESET}"

@@ -1208,20 +1208,10 @@ install_pi() {
     cp "$pi_binary_dir/package.json" "$fallback_dir/package.json"
   fi
 
-  # Also install to /usr/local/bin as convenience (may be wiped by macOS upgrades)
-  if [[ ! -d "/usr/local/bin" ]]; then
-    sudo -n mkdir -p /usr/local/bin 2>/dev/null && \
-      sudo chmod 755 /usr/local/bin 2>/dev/null || true
-  fi
-  if [[ -d "/usr/local/bin" ]]; then
-    [[ -L "$HELIOS_CLI_BIN" ]] && { rm -f "$HELIOS_CLI_BIN" 2>/dev/null || sudo rm -f "$HELIOS_CLI_BIN" 2>/dev/null || true; }
-    if [[ -w "/usr/local/bin" ]]; then
-      cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
-      [[ -f "$pi_binary_dir/package.json" ]] && cp "$pi_binary_dir/package.json" /usr/local/bin/package.json 2>/dev/null || true
-    elif sudo -n true 2>/dev/null; then
-      sudo cp "$pi_binary" "$HELIOS_CLI_BIN" 2>/dev/null && sudo chmod +x "$HELIOS_CLI_BIN" 2>/dev/null || true
-      [[ -f "$pi_binary_dir/package.json" ]] && sudo cp "$pi_binary_dir/package.json" /usr/local/bin/package.json 2>/dev/null || true
-    fi
+  # Remove stale binary from /usr/local/bin (it shadows the wrapper and bypasses PATH setup)
+  if [[ -f "/usr/local/bin/helios" ]] && [[ ! -L "/usr/local/bin/helios" ]]; then
+    rm -f "/usr/local/bin/helios" 2>/dev/null || sudo rm -f "/usr/local/bin/helios" 2>/dev/null || true
+    rm -f "/usr/local/bin/package.json" 2>/dev/null || sudo rm -f "/usr/local/bin/package.json" 2>/dev/null || true
   fi
 
   # Remove macOS quarantine attribute
@@ -3191,15 +3181,13 @@ run_verification() {
   # Post-install smoke test: verify the binary actually starts in a clean env
   if [[ "${CHECK_ONLY:-false}" != "true" ]] && [[ -f "$HOME/.helios-cli/helios" ]]; then
     local smoke_result=""
-    smoke_result=$(env -i HOME="$HOME" PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
-      "$HOME/.helios-cli/helios" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
+    smoke_result=$(env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
+      bash -c 'helios --version 2>&1' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) || true
     if [[ -n "$smoke_result" ]]; then
-      success "Smoke test: helios binary launches (v$smoke_result)"
+      success "Smoke test: helios launches via PATH (v$smoke_result)"
     else
-      warn "Smoke test: helios binary failed to start"
-      warn "This usually means 'bun' is not in PATH. Fix:"
-      warn "  1. Close this terminal and open a new one"
-      warn "  2. Or run: source ~/.zshrc"
+      warn "Smoke test: helios failed to launch via PATH"
+      warn "Fix: close this terminal and open a new one, then run 'helios'"
       all_ok=false
     fi
   fi

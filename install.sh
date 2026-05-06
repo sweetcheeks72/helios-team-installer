@@ -3966,6 +3966,7 @@ main() {
     snapshot_state
     run_step "Helios CLI"             update_pi_cli
     run_step "Agent Directory"    update_agent_dir
+    run_step "Helios CLI (wrapper)"  install_helios_cli
   fi
 
   run_step "Agent Root Deps"       install_agent_deps

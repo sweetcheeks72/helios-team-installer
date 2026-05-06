@@ -1001,6 +1001,7 @@ install_pi() {
       local pi_binary_dir
       pi_binary_dir="$(dirname "$pi_binary")"
       [[ -f "$pi_binary_dir/package.json" ]] && cp "$pi_binary_dir/package.json" "$(dirname "$HELIOS_CLI_FALLBACK")/package.json"
+      [[ -d "$pi_binary_dir/theme" ]] && cp -a "$pi_binary_dir/theme" "$(dirname "$HELIOS_CLI_FALLBACK")/theme"
       success "Helios CLI installed from package"
       PI_INSTALLED=true
       return 0
@@ -1249,6 +1250,9 @@ install_pi() {
   fallback_dir="$(dirname "$HELIOS_CLI_FALLBACK")"
   if [[ -f "$pi_binary_dir/package.json" ]]; then
     cp "$pi_binary_dir/package.json" "$fallback_dir/package.json"
+  fi
+  if [[ -d "$pi_binary_dir/theme" ]]; then
+    cp -a "$pi_binary_dir/theme" "$fallback_dir/theme"
   fi
 
   # Remove stale binary from /usr/local/bin (it shadows the wrapper and bypasses PATH setup)

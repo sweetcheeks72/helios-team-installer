@@ -95,6 +95,23 @@ for _arg in "$@"; do
   fi
 done
 
+# Auto-detect local package if running from within an extracted tarball
+# (e.g., /tmp/helios/installer/install.sh → LOCAL_PACKAGE=/tmp/helios)
+if [[ -z "$LOCAL_PACKAGE" ]]; then
+  _parent="$(cd "$INSTALLER_DIR/.." 2>/dev/null && pwd)"
+  if [[ -f "$_parent/VERSION" ]] && [[ -d "$_parent/agent" || -d "$_parent/cli" ]]; then
+    LOCAL_PACKAGE="$_parent"
+  fi
+fi
+
+# Auto-fix: ensure bun global dir has package.json (prevents startup crash)
+if [[ -d "$HOME/.bun/install/global" ]] && [[ ! -f "$HOME/.bun/install/global/package.json" ]]; then
+  echo '{}' > "$HOME/.bun/install/global/package.json"
+elif [[ -d "$HOME/.bun" ]] && [[ ! -d "$HOME/.bun/install/global" ]]; then
+  mkdir -p "$HOME/.bun/install/global"
+  echo '{}' > "$HOME/.bun/install/global/package.json"
+fi
+
 if [[ "$DRY_RUN" == "true" ]]; then
   echo -e "\n  ══════════════════════════════════════"
   echo -e "  ║  DRY RUN — no changes will be made  ║"

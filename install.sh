@@ -2170,9 +2170,11 @@ install_agent_deps() {
     else
       info "Deps present but native modules need rebuild for $(uname -m)..."
       if _repair_better_sqlite3; then
-        return 0
+        success "Native modules repaired ✓"
+      else
+        warn "better-sqlite3 native module unavailable — graph cache disabled (non-fatal)"
       fi
-      warn "Native module repair failed — trying full dependency reinstall"
+      return 0
     fi
   fi
 

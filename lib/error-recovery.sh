@@ -354,10 +354,9 @@ offer_troubleshoot() {
     printf "  Try this fix? [Y/n]: "
 
     local answer
-    if [ -t 0 ]; then
+    if [ -t 0 ] && [ -z "${CI:-}" ] && [ -z "${NONINTERACTIVE:-}" ]; then
       read -r answer
     else
-      # Non-interactive fallback (piped install): default to No
       answer="n"
       echo "n (non-interactive)"
     fi
@@ -485,6 +484,7 @@ run_step() {
 
   # ── Run command ─────────────────────────────────────────────────────
   local exit_code=0
+  _INSIDE_RUN_STEP=true
   if "${cmd[@]}" >"$tmp_output" 2>&1; then
     _INSIDE_RUN_STEP=false
     _kill_hb

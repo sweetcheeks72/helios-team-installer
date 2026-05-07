@@ -13,7 +13,7 @@ BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
 
 trap 'echo ""; echo -e "${RED}✗ Failed at line $LINENO.${RESET} Re-run to retry."' ERR
 
-if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
+if [[ ! -t 0 ]] && [[ -e /dev/tty ]] && (echo >/dev/tty) 2>/dev/null; then
   exec < /dev/tty 2>/dev/null || true
 fi
 

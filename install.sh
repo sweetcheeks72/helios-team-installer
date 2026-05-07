@@ -10,6 +10,14 @@ INSTALLER_VERSION="2.1.0"
 set -euo pipefail
 INSTALL_WARNINGS=()
 
+# ─── Interactive Mode Detection ───────────────────────────────────────────────
+# Returns 0 (true) if stdin is a terminal — i.e., the user can answer prompts.
+# Returns 1 (false) in piped/CI/non-interactive environments.
+# Functions that need user input MUST check this before calling `read`.
+_is_interactive() {
+  [[ -t 0 ]] && [[ -z "${CI:-}" ]] && [[ -z "${NONINTERACTIVE:-}" ]]
+}
+
 # install.sh expects the full checked-out repository so it can source lib/*.
 # If someone runs the raw file via `curl .../install.sh | bash`, hand off to
 # the pipe-safe bootstrap entrypoint instead of crashing on BASH_SOURCE/lib paths.
@@ -418,6 +426,10 @@ retry_with_backoff() {
 spin_pid=""
 start_spinner() {
   local msg="${1:-Working...}"
+  # Skip spinner entirely in non-interactive/no-tty environments
+  if ! _is_interactive && ! [[ -e /dev/tty ]]; then
+    return 0
+  fi
   local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
   local i=0
   printf '\033[?25l'
@@ -1390,12 +1402,12 @@ setup_helios_agent() {
     local url="$1" dest="$2"
     local fname
     fname="$(basename "$url")"
-    printf "  ↓ %s " "$fname" > /dev/tty 2>/dev/null || true
+    printf "  ↓ %s " "$fname" >/dev/tty 2>/dev/null || printf "  ↓ %s " "$fname" || true
     if curl -fSL --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 300 -o "$dest" "$url"; then
-      printf "✓\n" > /dev/tty 2>/dev/null || true
+      printf "✓\n" >/dev/tty 2>/dev/null || printf "✓\n" || true
       return 0
     else
-      printf "✗\n" > /dev/tty 2>/dev/null || true
+      printf "✗\n" >/dev/tty 2>/dev/null || printf "✗\n" || true
       return 1
     fi
   }
@@ -1942,6 +1954,12 @@ install_packages() {
 _setup_bedrock_credentials() {
   local env_file="$PI_AGENT_DIR/.env"
 
+  if ! _is_interactive; then
+    warn "Non-interactive — skipping AWS credential prompts"
+    warn "Add credentials manually to ~/.pi/agent/.env before using Bedrock"
+    return 0
+  fi
+
   echo ""
   info "Bedrock requires AWS credentials"
   echo -e "  ${DIM}  Get them from: AWS Console → IAM → Security Credentials${RESET}"
@@ -2004,11 +2022,23 @@ select_provider() {
     local current_provider
     current_provider=$(python3 -c "import json; print(json.load(open('$PI_AGENT_DIR/settings.json')).get('defaultProvider','unknown'))" 2>/dev/null || echo "unknown")
     success "Current provider: $current_provider"
+    if ! _is_interactive; then
+      info "Non-interactive — keeping current provider ($current_provider)"
+      return 0
+    fi
     ask "Change provider? [y/N]:"
     read -t 120 -r change_provider || change_provider=""
     if [[ ! "$change_provider" =~ ^[Yy]$ ]]; then
       return 0
     fi
+  fi
+
+  if ! _is_interactive; then
+    SELECTED_PROVIDER="anthropic"
+    [[ -f "$INSTALLER_DIR/provider-configs/anthropic.json" ]] && \
+      _apply_provider_config "$INSTALLER_DIR/provider-configs/anthropic.json"
+    success "Non-interactive — defaulting to Anthropic"
+    return 0
   fi
 
   echo ""
@@ -3061,7 +3091,7 @@ setup_pi_auth() {
   echo -e "    ${CYAN}4.${RESET} Type ${BOLD}/exit${RESET} to return to the installer"
   echo ""
   # Skip if non-interactive (e.g., piped install, CI)
-  if [[ ! -t 0 ]]; then
+  if ! _is_interactive; then
     info "Non-interactive mode — skipping login (run 'helios' later and type /login)"
     return 0
   fi
@@ -3106,6 +3136,11 @@ setup_pi_auth() {
 # ─── Familiar Skills ──────────────────────────────────────────────────────────
 setup_familiar() {
   step "Familiar Skills (optional)"
+
+  if ! _is_interactive; then
+    info "Non-interactive — skipping Familiar (install later with --fresh)"
+    return 0
+  fi
 
   echo ""
   ask "Install Familiar skills? (Gmail, Calendar, Drive, transcription) [y/N]:"
@@ -3782,8 +3817,13 @@ PLIST_EOF
     # Offer to add auto-start to .bashrc
     local wsl_autostart_marker="# Helios WSL auto-start"
     if ! grep -q "$wsl_autostart_marker" "$HOME/.bashrc" 2>/dev/null; then
-      ask "Add Helios service auto-start to ~/.bashrc? [y/N]:"
-      read -t 120 -r add_autostart || add_autostart=""
+      if _is_interactive; then
+        ask "Add Helios service auto-start to ~/.bashrc? [y/N]:"
+        read -t 120 -r add_autostart || add_autostart=""
+      else
+        add_autostart="y"
+        info "Non-interactive — auto-adding Helios service start to ~/.bashrc"
+      fi
       if [[ "$add_autostart" =~ ^[Yy]$ ]]; then
         # Unquoted heredoc: $mg_name expands at write time (correct — we embed
         # the resolved name so the .bashrc reflects the actual container name).
@@ -3886,16 +3926,20 @@ main() {
   if type load_checkpoint &>/dev/null; then
     _last_checkpoint=$(load_checkpoint)
     if [[ "$_last_checkpoint" -gt 0 ]] && [[ "$FRESH_INSTALL" == false ]] && [[ "$UPDATE_MODE" == false ]]; then
-      echo ""
-      echo -e "  ${CYAN}ℹ${RESET}  Previous install reached step $_last_checkpoint of $TOTAL_STEPS"
-      ask "Resume from where you left off? [Y/n]:"
-      read -t 30 -r _resume_choice || _resume_choice="y"
-      if [[ "$_resume_choice" =~ ^[Nn]$ ]]; then
-        clear_checkpoint
+      if _is_interactive; then
+        echo ""
+        echo -e "  ${CYAN}ℹ${RESET}  Previous install reached step $_last_checkpoint of $TOTAL_STEPS"
+        ask "Resume from where you left off? [Y/n]:"
+        read -t 30 -r _resume_choice || _resume_choice="y"
+        if [[ "$_resume_choice" =~ ^[Nn]$ ]]; then
+          clear_checkpoint
+        else
+          echo -e "  ${GREEN}✓${RESET} Resuming — skipping completed steps"
+        fi
+        echo ""
       else
-        echo -e "  ${GREEN}✓${RESET} Resuming — skipping completed steps"
+        echo -e "  ${GREEN}✓${RESET} Resuming from checkpoint (step $_last_checkpoint)"
       fi
-      echo ""
     fi
   fi
 

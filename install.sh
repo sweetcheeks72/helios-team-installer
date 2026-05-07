@@ -1388,13 +1388,36 @@ setup_helios_agent() {
         [[ -e "$PI_AGENT_DIR/$preserve" ]] && cp -a "$PI_AGENT_DIR/$preserve" "$tmp_stash/"
       done
     fi
-    rm -rf "$PI_AGENT_DIR"
+
+    # Atomic swap: copy to temp location first, then rename into place.
+    # Prevents broken state if cp is interrupted (Ctrl-C, disk full).
     mkdir -p "$HOME/.pi"
-    cp -a "$LOCAL_PACKAGE/agent" "$PI_AGENT_DIR"
+    local tmp_agent
+    tmp_agent="$(mktemp -d "$HOME/.pi/agent-install.XXXXXX")"
+    if ! cp -a "$LOCAL_PACKAGE/agent/." "$tmp_agent/"; then
+      error "Failed to copy agent from package — keeping existing install"
+      rm -rf "$tmp_agent" "$tmp_stash"
+      return 1
+    fi
+
+    # Verify critical structure before swapping
+    if [[ ! -d "$tmp_agent/extensions" ]] || [[ ! -d "$tmp_agent/lib" ]] || [[ ! -f "$tmp_agent/bin/helios" ]]; then
+      error "Package agent/ is missing critical files (extensions/, lib/, bin/helios)"
+      rm -rf "$tmp_agent" "$tmp_stash"
+      return 1
+    fi
+
+    # Swap: old → trash, new → PI_AGENT_DIR (atomic on same filesystem)
+    local trash_dir="${PI_AGENT_DIR}.old-$(date +%s)"
+    if [[ -d "$PI_AGENT_DIR" ]]; then
+      mv "$PI_AGENT_DIR" "$trash_dir" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
+    fi
+    mv "$tmp_agent" "$PI_AGENT_DIR"
+
     for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"
     done
-    rm -rf "$tmp_stash"
+    rm -rf "$tmp_stash" "$trash_dir"
     if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
       cat "$LOCAL_PACKAGE/VERSION" > "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo "local" > "$PI_AGENT_DIR/VERSION"
     fi
@@ -1513,6 +1536,14 @@ setup_helios_agent() {
     fi
     rm -f "$tmp_tarball"
 
+    # Post-extraction verification: critical dirs must exist
+    if [[ ! -d "$tmp_extract/extensions" ]] || [[ ! -d "$tmp_extract/lib" ]] || [[ ! -f "$tmp_extract/bin/helios" ]]; then
+      error "Tarball extracted but critical files missing (extensions/, lib/, bin/helios)"
+      error "Keeping existing install — this tarball may be corrupt or truncated"
+      rm -rf "$tmp_extract" "$tmp_stash"
+      return 0
+    fi
+
     # Swap: old dir → trash, new dir → PI_AGENT_DIR
     local trash_dir="${PI_AGENT_DIR}.old-$(date +%s)"
     mv "$PI_AGENT_DIR" "$trash_dir" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
@@ -1605,7 +1636,15 @@ setup_helios_agent() {
   fi
   rm -f "$tmp_tarball"
 
-  rm -rf "$PI_AGENT_DIR"
+  if [[ ! -d "$tmp_extract/extensions" ]] || [[ ! -d "$tmp_extract/lib" ]] || [[ ! -f "$tmp_extract/bin/helios" ]]; then
+    error "Tarball extracted but critical files missing (extensions/, lib/, bin/helios)"
+    rm -rf "$tmp_extract"
+    return 1
+  fi
+
+  if [[ -d "$PI_AGENT_DIR" ]]; then
+    mv "$PI_AGENT_DIR" "${PI_AGENT_DIR}.old-$(date +%s)" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
+  fi
   mv "$tmp_extract" "$PI_AGENT_DIR"
   success "Helios agent installed to $PI_AGENT_DIR"
 

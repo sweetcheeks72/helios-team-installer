@@ -470,6 +470,16 @@ fi
 
 echo "✅ Verification passed: ${GIT_PKG_COUNT} packages in git/github.com/helios-agi/"
 
+# Check for git merge conflict markers in staged files
+CONFLICT_FILES=$(grep -rl "^<<<<<<<\|^=======$\|^>>>>>>>" "${STAGE_DIR}" --include="*.sh" --include="*.ts" --include="*.js" --include="*.json" 2>/dev/null || true)
+if [[ -n "$CONFLICT_FILES" ]]; then
+  echo "❌ CRITICAL: Git merge conflict markers found in staged files:"
+  echo "$CONFLICT_FILES" | sed 's/^/   /'
+  echo "   Resolve conflicts before building. Aborting."
+  exit 1
+fi
+echo "✅ No merge conflict markers found"
+
 if [[ -d "${STAGE_DIR}/packages" ]]; then
   echo "⚠️  WARNING: packages/ directory exists in staging (should have been excluded)"
   echo "   This suggests rsync --exclude='packages/' is not working."

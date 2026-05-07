@@ -234,8 +234,15 @@ jobs:
           tar xzf /tmp/cli/pi-darwin-arm64.tar.gz -C /tmp/pkg-arm64/helios/cli/
           tar xzf /tmp/cli/pi-darwin-x64.tar.gz -C /tmp/pkg-x64/helios/cli/
           
-          # Write VERSION from release tag (strip leading v)
-          VERSION="${RELEASE_TAG#v}"
+          # Write VERSION — must match the agent tarball's VERSION (from agent's package.json)
+          # to prevent the update checker from seeing a desync and forcing a spurious downgrade.
+          # The agent directory already has its own VERSION file (from the agent build step).
+          # Use THAT as the single source of truth for the all-in-one package too.
+          if [[ -f /tmp/pkg-arm64/helios/agent/VERSION ]]; then
+            VERSION="$(cat /tmp/pkg-arm64/helios/agent/VERSION)"
+          else
+            VERSION="${RELEASE_TAG#v}"
+          fi
           echo "$VERSION" > /tmp/pkg-arm64/helios/VERSION
           echo "$VERSION" > /tmp/pkg-x64/helios/VERSION
           

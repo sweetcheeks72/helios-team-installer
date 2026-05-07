@@ -124,7 +124,7 @@ fi
 if [[ ! -t 0 ]]; then
   if [[ "${DRY_RUN:-false}" == "true" ]] || [[ "${CHECK_ONLY:-false}" == "true" ]]; then
     : # dry-run/check mode doesn't need interactive stdin
-  elif [[ -e /dev/tty ]]; then
+  elif [[ -e /dev/tty ]] && (echo >/dev/tty) 2>/dev/null; then
     exec < /dev/tty 2>/dev/null || true
   else
     echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
@@ -3844,7 +3844,7 @@ main() {
     TOTAL_STEPS=7
     CURRENT_STEP=0
   else
-    TOTAL_STEPS=14
+    TOTAL_STEPS=16
     CURRENT_STEP=0
   fi
 

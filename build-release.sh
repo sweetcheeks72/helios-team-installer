@@ -716,16 +716,22 @@ echo ""
 # Create latest copies — both universal name and arch-specific
 cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest.tar.gz"
 cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz"
+# Cross-arch copies — native modules include prebuilds for all platforms
+if [[ "${BUILD_ARCH}" == "arm64" ]]; then
+  cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest-${BUILD_OS}-x64.tar.gz"
+elif [[ "${BUILD_ARCH}" == "x64" ]]; then
+  cp "${TARBALL_PATH}" "${DIST_DIR}/helios-agent-latest-${BUILD_OS}-arm64.tar.gz"
+fi
 # Regenerate checksum for latest copies with correct relative filenames
 (
   cd "${DIST_DIR}"
-  if command -v sha256sum &>/dev/null; then
-    sha256sum "helios-agent-latest.tar.gz" > "helios-agent-latest.tar.gz.sha256"
-    sha256sum "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz" > "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz.sha256"
-  elif command -v shasum &>/dev/null; then
-    shasum -a 256 "helios-agent-latest.tar.gz" > "helios-agent-latest.tar.gz.sha256"
-    shasum -a 256 "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz" > "helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz.sha256"
-  fi
+  for f in helios-agent-latest*.tar.gz; do
+    if command -v sha256sum &>/dev/null; then
+      sha256sum "$f" > "$f.sha256"
+    elif command -v shasum &>/dev/null; then
+      shasum -a 256 "$f" > "$f.sha256"
+    fi
+  done
 )
 echo "  📎 Latest   : ${DIST_DIR}/helios-agent-latest.tar.gz"
 echo "  📎 Latest (${BUILD_OS}-${BUILD_ARCH}): ${DIST_DIR}/helios-agent-latest-${BUILD_OS}-${BUILD_ARCH}.tar.gz"

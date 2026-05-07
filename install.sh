@@ -840,6 +840,12 @@ check_prerequisites() {
     fi
   fi
 
+  # Always ensure bun global dir exists (even if bun install failed — prevents future crash)
+  if [[ -d "$HOME/.bun" ]] && [[ ! -f "$HOME/.bun/install/global/package.json" ]]; then
+    mkdir -p "$HOME/.bun/install/global"
+    echo '{}' > "$HOME/.bun/install/global/package.json"
+  fi
+
   if command -v bun &>/dev/null; then
     local bun_path bun_ver bun_major bun_minor
     bun_path="$(command -v bun)"
@@ -2285,6 +2291,28 @@ install_agent_deps() {
       fi
       INSTALL_WARNINGS+=("better-sqlite3 failed — graph cache will be unavailable until Node ≤22 is installed")
     }
+  fi
+
+  # Native module health check — rebuild any that don't load on this platform
+  if command -v node &>/dev/null; then
+    local _native_failures=()
+    for _mod in better-sqlite3 koffi tree-sitter tree-sitter-typescript tree-sitter-javascript; do
+      if [[ -d "$PI_AGENT_DIR/node_modules/$_mod" ]]; then
+        if ! _timeout_cmd 10 node -e "require('$PI_AGENT_DIR/node_modules/$_mod')" 2>/dev/null; then
+          _native_failures+=("$_mod")
+        fi
+      fi
+    done
+    if [[ ${#_native_failures[@]} -gt 0 ]]; then
+      info "Rebuilding native modules for $(uname -s)/$(uname -m): ${_native_failures[*]}"
+      for _mod in "${_native_failures[@]}"; do
+        if [[ "$_mod" == "better-sqlite3" ]]; then
+          _repair_better_sqlite3 || true
+        else
+          (cd "$PI_AGENT_DIR" && npm rebuild "$_mod" 2>>"${LOG_FILE:-/dev/null}") || true
+        fi
+      done
+    fi
   fi
   
   success "Agent dependencies installed"

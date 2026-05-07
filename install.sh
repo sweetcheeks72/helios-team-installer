@@ -3570,12 +3570,19 @@ print('queued: ' + target)
     warn "Some bootstrap state files could not be written"
   fi
 
-  # Launch index-codebase-fast.js in the background
+  # Launch index-codebase-fast.js in the background at low priority
   local bootstrap_log="$PI_AGENT_DIR/logs/codebase-bootstrap.log"
   mkdir -p "$(dirname "$bootstrap_log")"
 
-  # Pass installer CWD via env so bootstrap knows which repo to add
-  if BOOTSTRAP_CWD="$installer_cwd" nohup node "$bootstrap_script" \
+  # Use nice 19 (lowest CPU priority) so indexing never starves interactive sessions.
+  # The indexer already has internal throttling (200ms sleeps between writes, 500ms
+  # between MAGE batches) but OS-level nice ensures Memgraph serves user queries first.
+  local nice_cmd=""
+  if command -v nice &>/dev/null; then
+    nice_cmd="nice -n 19"
+  fi
+
+  if BOOTSTRAP_CWD="$installer_cwd" nohup $nice_cmd node "$bootstrap_script" --incremental --no-embed \
       >> "$bootstrap_log" 2>&1 &
   then
     local bg_pid=$!

@@ -122,14 +122,12 @@ fi
 # When run via `curl ... | bash`, stdin is the pipe (EOF after script downloads).
 # Reopen stdin from /dev/tty so interactive `read` commands work.
 if [[ ! -t 0 ]]; then
-  if [[ "${DRY_RUN:-false}" == "true" ]] || [[ "${CHECK_ONLY:-false}" == "true" ]]; then
-    : # dry-run/check mode doesn't need interactive stdin
+  if [[ "${DRY_RUN:-false}" == "true" ]] || [[ "${CHECK_ONLY:-false}" == "true" ]] || [[ -n "${LOCAL_PACKAGE:-}" ]]; then
+    : # non-interactive modes don't need terminal stdin
   elif [[ -e /dev/tty ]] && (echo >/dev/tty) 2>/dev/null; then
     exec < /dev/tty 2>/dev/null || true
   else
-    echo "ERROR: No terminal available (/dev/tty). Run this script directly instead of piping." >&2
-    echo "  curl -fsSL https://raw.githubusercontent.com/helios-agi/helios-team-installer/main/bootstrap.sh -o /tmp/helios-bootstrap.sh && bash /tmp/helios-bootstrap.sh" >&2
-    exit 1
+    : # No terminal — continue in non-interactive mode (interactive prompts will use defaults)
   fi
 fi
 

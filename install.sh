@@ -2111,6 +2111,30 @@ _apply_provider_config() {
   fi
 }
 
+_verify_native_modules() {
+  command -v node &>/dev/null || return 0
+  local _native_failures=()
+  for _mod in better-sqlite3 koffi tree-sitter tree-sitter-typescript tree-sitter-javascript; do
+    if [[ -d "$PI_AGENT_DIR/node_modules/$_mod" ]]; then
+      if ! _timeout_cmd 10 node -e "require('$PI_AGENT_DIR/node_modules/$_mod')" 2>/dev/null; then
+        _native_failures+=("$_mod")
+      fi
+    fi
+  done
+  if [[ ${#_native_failures[@]} -gt 0 ]]; then
+    info "Rebuilding native modules for $(uname -s)/$(uname -m): ${_native_failures[*]}"
+    for _mod in "${_native_failures[@]}"; do
+      if [[ "$_mod" == "better-sqlite3" ]]; then
+        _repair_better_sqlite3 || true
+      else
+        (cd "$PI_AGENT_DIR" && npm rebuild "$_mod" 2>>"${LOG_FILE:-/dev/null}") || {
+          warn "$_mod rebuild failed — feature may be degraded"
+        }
+      fi
+    done
+  fi
+}
+
 # ─── Agent Root Dependencies ──────────────────────────────────────────────────
 # ~/.pi/agent/package.json declares core deps (awilix, neo4j-driver, typebox,
 # @helios-agent/pi-coding-agent, etc.) that extensions import at runtime.
@@ -2226,6 +2250,8 @@ install_agent_deps() {
       fi
 
       if [[ "$esm_ok" == "true" ]]; then
+        # ESM works, but verify ALL native modules load (not just sqlite)
+        _verify_native_modules
         success "Agent deps verified — pi-coding-agent ESM import OK ✓"
         return 0
       fi
@@ -2294,26 +2320,7 @@ install_agent_deps() {
   fi
 
   # Native module health check — rebuild any that don't load on this platform
-  if command -v node &>/dev/null; then
-    local _native_failures=()
-    for _mod in better-sqlite3 koffi tree-sitter tree-sitter-typescript tree-sitter-javascript; do
-      if [[ -d "$PI_AGENT_DIR/node_modules/$_mod" ]]; then
-        if ! _timeout_cmd 10 node -e "require('$PI_AGENT_DIR/node_modules/$_mod')" 2>/dev/null; then
-          _native_failures+=("$_mod")
-        fi
-      fi
-    done
-    if [[ ${#_native_failures[@]} -gt 0 ]]; then
-      info "Rebuilding native modules for $(uname -s)/$(uname -m): ${_native_failures[*]}"
-      for _mod in "${_native_failures[@]}"; do
-        if [[ "$_mod" == "better-sqlite3" ]]; then
-          _repair_better_sqlite3 || true
-        else
-          (cd "$PI_AGENT_DIR" && npm rebuild "$_mod" 2>>"${LOG_FILE:-/dev/null}") || true
-        fi
-      done
-    fi
-  fi
+  _verify_native_modules
   
   success "Agent dependencies installed"
 }

@@ -129,23 +129,23 @@ jobs:
           rm -rf governance/events*.jsonl brainv2/desktop-events*.jsonl dlq-archive/
           echo "✓ Removed large event logs"
           
-          # 7. Strip non-darwin native prebuilds (keep darwin-arm64 + darwin-x64)
+          # 7. Strip non-essential native prebuilds (keep darwin + linux-x64)
           for d in node_modules/koffi/build/koffi/*/; do
-            case "$(basename "$d")" in darwin_arm64|darwin_x64) ;; *) rm -rf "$d" ;; esac
+            case "$(basename "$d")" in darwin_arm64|darwin_x64|linux_x64|linux_arm64) ;; *) rm -rf "$d" ;; esac
           done
           for pkg in tree-sitter tree-sitter-typescript tree-sitter-javascript; do
             if [[ -d "node_modules/$pkg/prebuilds" ]]; then
               for d in "node_modules/$pkg/prebuilds"/*/; do
-                case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
+                case "$(basename "$d")" in darwin-arm64|darwin-x64|linux-x64|linux-arm64) ;; *) rm -rf "$d" ;; esac
               done
             fi
           done
           if [[ -d git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds ]]; then
             for d in git/github.com/helios-agi/pi-interactive-shell/node_modules/node-pty/prebuilds/*/; do
-              case "$(basename "$d")" in darwin-arm64|darwin-x64) ;; *) rm -rf "$d" ;; esac
+              case "$(basename "$d")" in darwin-arm64|darwin-x64|linux-x64|linux-arm64) ;; *) rm -rf "$d" ;; esac
             done
           fi
-          echo "✓ Stripped non-darwin prebuilds"
+          echo "✓ Stripped non-essential prebuilds (kept darwin + linux)"
           
           # 8. Ensure better-sqlite3 has prebuilds for both archs (downloads from GH releases)
           BS3_DIR="node_modules/better-sqlite3"

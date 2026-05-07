@@ -1518,6 +1518,17 @@ setup_helios_agent() {
     mv "$PI_AGENT_DIR" "$trash_dir" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
     mv "$tmp_extract" "$PI_AGENT_DIR"
 
+    # Init git repo if not present (CLI requires it for context detection)
+    if [[ ! -d "$PI_AGENT_DIR/.git" ]] && command -v git &>/dev/null; then
+      git -C "$PI_AGENT_DIR" init -q 2>/dev/null
+      git -C "$PI_AGENT_DIR" config user.email "helios@helios-agi.com" 2>/dev/null
+      git -C "$PI_AGENT_DIR" config user.name "Helios" 2>/dev/null
+      echo "tarball" > "$PI_AGENT_DIR/.tarball-marker"
+      git -C "$PI_AGENT_DIR" add .tarball-marker 2>/dev/null
+      git -C "$PI_AGENT_DIR" commit -q -m "tarball install v${remote_version}" 2>/dev/null
+      git -C "$PI_AGENT_DIR" branch -M main 2>/dev/null
+    fi
+
     # Restore user files
     for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"

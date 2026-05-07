@@ -554,7 +554,7 @@ echo "📦 Creating tarball: ${TARBALL_NAME} ..."
 # Create from TMPDIR so the archive root is helios-agent-vX.Y.Z/
 (
   cd "${TMPDIR}"
-  tar -czf "${TARBALL_PATH}" "helios-agent-v${VERSION}/"
+  COPYFILE_DISABLE=1 tar -czf "${TARBALL_PATH}" "helios-agent-v${VERSION}/"
 )
 
 echo "✅ Tarball created: ${TARBALL_PATH}"

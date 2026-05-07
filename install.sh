@@ -3474,19 +3474,18 @@ detect_update_mode() {
 
 # ─── Bootstrap Scheduling ────────────────────────────────────────────────────
 #
-# Writes queued state files and launches bootstrap-codebases.js in the background.
+# Writes queued state files and launches index-codebase-fast.js in the background.
 # Install is only considered successful when bootstrap completes OR durable queued
 # state files are written and the background job is launched successfully.
 #
 schedule_bootstrap() {
   step "Codebase Bootstrap"
 
-  local bootstrap_script="$PI_AGENT_DIR/skills/skill-graph/scripts/bootstrap-codebases.js"
+  local bootstrap_script="$PI_AGENT_DIR/lib/graph/ingest/index-codebase-fast.js"
   local bootstrap_dir="$PI_AGENT_DIR/state/codebase-bootstrap"
 
   if [[ ! -f "$bootstrap_script" ]]; then
-    warn "bootstrap-codebases.js not found — skipping bootstrap scheduling"
-    info "Re-run installer after pulling latest helios-agent to enable auto-bootstrap"
+    warn "index-codebase-fast.js not found — skipping bootstrap scheduling"
     return 0
   fi
 
@@ -3571,8 +3570,8 @@ print('queued: ' + target)
     warn "Some bootstrap state files could not be written"
   fi
 
-  # Launch bootstrap-codebases.js in the background
-  local bootstrap_log="$PI_AGENT_DIR/logs/bootstrap-codebases.log"
+  # Launch index-codebase-fast.js in the background
+  local bootstrap_log="$PI_AGENT_DIR/logs/codebase-bootstrap.log"
   mkdir -p "$(dirname "$bootstrap_log")"
 
   # Pass installer CWD via env so bootstrap knows which repo to add

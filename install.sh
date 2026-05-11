@@ -37,6 +37,24 @@ if [[ "${_HELIOS_INSTALLER_RUNNING:-}" == "true" ]]; then
 fi
 export _HELIOS_INSTALLER_RUNNING=true
 
+# ─── Filesystem lock (prevents concurrent installer corruption) ───────────────
+INSTALLER_LOCK_DIR="$HOME/.pi/.installer-lock"
+if [[ "${CHECK_ONLY:-false}" != "true" ]] && [[ "${DRY_RUN:-false}" != "true" ]]; then
+  if ! mkdir "$INSTALLER_LOCK_DIR" 2>/dev/null; then
+    lock_age=$(( ($(date +%s) - $(stat -f %m "$INSTALLER_LOCK_DIR" 2>/dev/null || stat -c %Y "$INSTALLER_LOCK_DIR" 2>/dev/null || echo 0)) ))
+    if [[ "$lock_age" -gt 600 ]]; then
+      rm -rf "$INSTALLER_LOCK_DIR"
+      mkdir "$INSTALLER_LOCK_DIR" 2>/dev/null || true
+    else
+      echo -e "${RED:-}✗ Another installer is already running (lock age: ${lock_age}s).${RESET:-}"
+      echo "  Wait for it to finish, or remove the stale lock:"
+      echo "    rm -rf $INSTALLER_LOCK_DIR"
+      exit 1
+    fi
+  fi
+  trap 'rm -rf "$INSTALLER_LOCK_DIR" 2>/dev/null' EXIT
+fi
+
 # ─── Source error recovery library ────────────────────────────────────────────
 INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$INSTALLER_DIR/lib/error-recovery.sh" ]]; then
@@ -1172,14 +1190,20 @@ install_pi() {
     echo -e "    1. ${tarball_url}"
     echo -e "    2. ${HELIOS_RELEASE_URL}/${platform_tarball}"
     echo -e "    3. gh release download (if available)"
+    echo ""
+    echo -e "  ${BOLD}Common causes:${RESET}"
     if [[ -n "${HTTPS_PROXY:-}${https_proxy:-}" ]]; then
-      echo -e "  ${BOLD}Note:${RESET} Proxy detected — set CURL_CA_BUNDLE if using custom CA."
+      echo -e "    • Proxy detected (${HTTPS_PROXY:-$https_proxy}) — set CURL_CA_BUNDLE for custom CA"
     fi
+    echo -e "    • Corporate firewall/MITM: export CURL_CA_BUNDLE=/path/to/corporate-ca.pem"
+    echo -e "    • VPN blocking GitHub: disconnect VPN and retry"
+    echo -e "    • Air-gapped network: download tarball on another machine, then:"
+    echo -e "      scp pi-${platform_tarball} user@host:/tmp/"
+    echo -e "      bash install.sh --local-package /tmp"
+    echo ""
     echo -e "  ${BOLD}Manual fix:${RESET}"
     echo -e "    curl -fsSL ${tarball_url} -o /tmp/cli.tar.gz"
-    echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp"
-    echo -e "    # The binary is inside the tarball at pi/pi"
-    echo -e "    sudo cp /tmp/pi/pi /usr/local/bin/helios && sudo chmod +x /usr/local/bin/helios"
+    echo -e "    tar xzf /tmp/cli.tar.gz -C /tmp && sudo cp /tmp/pi/pi /usr/local/bin/helios"
     rm -rf "$tmp_dir" 2>/dev/null
     return 1
   fi
@@ -1412,7 +1436,10 @@ setup_helios_agent() {
     if [[ -d "$PI_AGENT_DIR" ]]; then
       mv "$PI_AGENT_DIR" "$trash_dir" 2>/dev/null || rm -rf "$PI_AGENT_DIR"
     fi
-    mv "$tmp_agent" "$PI_AGENT_DIR"
+    if ! mv "$tmp_agent" "$PI_AGENT_DIR" 2>/dev/null; then
+      # mv failed (cross-filesystem or NFS) — fallback to cp + rm
+      cp -a "$tmp_agent/." "$PI_AGENT_DIR/" && rm -rf "$tmp_agent"
+    fi
 
     for preserve in "${HELIOS_PRESERVE_FILES[@]}"; do
       [[ -e "$tmp_stash/$preserve" ]] && cp -a "$tmp_stash/$preserve" "$PI_AGENT_DIR/"

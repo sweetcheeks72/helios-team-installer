@@ -41,7 +41,13 @@ export _HELIOS_INSTALLER_RUNNING=true
 INSTALLER_LOCK_DIR="$HOME/.pi/.installer-lock"
 if [[ "${CHECK_ONLY:-false}" != "true" ]] && [[ "${DRY_RUN:-false}" != "true" ]]; then
   if ! mkdir "$INSTALLER_LOCK_DIR" 2>/dev/null; then
-    lock_age=$(( ($(date +%s) - $(stat -f %m "$INSTALLER_LOCK_DIR" 2>/dev/null || stat -c %Y "$INSTALLER_LOCK_DIR" 2>/dev/null || echo 0)) ))
+    lock_mtime=""
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+      lock_mtime=$(stat -f %m "$INSTALLER_LOCK_DIR" 2>/dev/null || true)
+    else
+      lock_mtime=$(stat -c %Y "$INSTALLER_LOCK_DIR" 2>/dev/null || true)
+    fi
+    lock_age=$(( $(date +%s) - ${lock_mtime:-0} ))
     if [[ "$lock_age" -gt 600 ]]; then
       rm -rf "$INSTALLER_LOCK_DIR"
       mkdir "$INSTALLER_LOCK_DIR" 2>/dev/null || true
@@ -828,6 +834,59 @@ check_prerequisites() {
         fi
       fi
       if [[ "$node_ok" == false ]]; then
+        # Strategy: direct binary download (same as update mode Strategy 8)
+        local _arch _os _node_install_dir
+        _arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        _node_install_dir="$HOME/.local/node22"
+        if [[ -x "$_node_install_dir/bin/node" ]]; then
+          local _existing_ver
+          _existing_ver=$("$_node_install_dir/bin/node" -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          if [[ "$_existing_ver" -le "$NODE_MAJOR_MAX" ]] && [[ "$_existing_ver" -ge "$NODE_MAJOR_MIN" ]]; then
+            export PATH="$_node_install_dir/bin:$PATH"
+            hash -r 2>/dev/null || true
+            node_ok=true
+            success "Node.js $("$_node_install_dir/bin/node" -v) from existing sidecar"
+          fi
+        fi
+        if [[ "$node_ok" == false ]]; then
+          info "Downloading Node ${NODE_MAJOR_MAX} LTS binary..."
+          local _dl_ok=false
+          if command -v xz &>/dev/null || tar --help 2>&1 | grep -q 'xz'; then
+            local _xz_tarball="node-v22.22.0-${_os}-${_arch}.tar.xz"
+            if curl -fsSL --max-time 120 "https://nodejs.org/dist/v22.22.0/${_xz_tarball}" -o "/tmp/${_xz_tarball}" 2>>"${LOG_FILE:-/dev/null}"; then
+              mkdir -p "$_node_install_dir"
+              tar -xJf "/tmp/${_xz_tarball}" -C "$_node_install_dir" --strip-components=1 2>>"${LOG_FILE:-/dev/null}" && _dl_ok=true
+              rm -f "/tmp/${_xz_tarball}"
+            fi
+          fi
+          if [[ "$_dl_ok" == "false" ]]; then
+            local _gz_tarball="node-v22.22.0-${_os}-${_arch}.tar.gz"
+            if curl -fsSL --max-time 120 "https://nodejs.org/dist/v22.22.0/${_gz_tarball}" -o "/tmp/${_gz_tarball}" 2>>"${LOG_FILE:-/dev/null}"; then
+              mkdir -p "$_node_install_dir"
+              tar -xzf "/tmp/${_gz_tarball}" -C "$_node_install_dir" --strip-components=1 2>>"${LOG_FILE:-/dev/null}" && _dl_ok=true
+              rm -f "/tmp/${_gz_tarball}"
+            fi
+          fi
+          if [[ "$_dl_ok" == "true" ]] && [[ -x "$_node_install_dir/bin/node" ]]; then
+            export PATH="$_node_install_dir/bin:$PATH"
+            hash -r 2>/dev/null || true
+            node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+            if [[ "$node_major" -le "$NODE_MAJOR_MAX" ]]; then
+              node_ok=true
+              success "Node.js $(node -v) via direct download ($HOME/.local/node22)"
+              local _shell_rc="$HOME/.bashrc"
+              [[ -f "$HOME/.zshrc" ]] && _shell_rc="$HOME/.zshrc"
+              [[ ! -f "$_shell_rc" ]] && _shell_rc="$HOME/.profile"
+              if ! grep -q ".local/node22/bin" "$_shell_rc" 2>/dev/null; then
+                echo "export PATH=\"\$HOME/.local/node22/bin:\$PATH\"" >> "$_shell_rc" 2>/dev/null || true
+                info "Added Node 22 to PATH in $(basename "$_shell_rc") for new terminals"
+              fi
+            fi
+          fi
+        fi
+      fi
+      if [[ "$node_ok" == false ]]; then
         error "Node.js $(node -v) is too new — native modules require Node ${NODE_MAJOR_MAX}.x LTS"
         error "Install Node 22 LTS manually, then re-run this installer:"
         error "  • nvm install 22 && nvm alias default 22"
@@ -925,6 +984,12 @@ check_prerequisites() {
     error "git installation failed"
     exit 1
   fi
+  if ! git config --global user.name &>/dev/null; then
+    local _git_user="${USER:-$(whoami)}"
+    git config --global user.name "$_git_user" 2>/dev/null || true
+    git config --global user.email "${_git_user}@$(hostname -f 2>/dev/null || echo localhost)" 2>/dev/null || true
+    info "Set default git identity: $_git_user"
+  fi
 
   # ── curl ────────────────────────────────────────────────────────────────────
   if command -v curl &>/dev/null; then
@@ -933,7 +998,24 @@ check_prerequisites() {
     _install_dep curl curl curl || warn "curl not found — some features may be limited"
   fi
 
-  # ── python3 ─────────────────────────────────────────────────────────────────
+  if command -v gh &>/dev/null; then
+    success "gh $(gh --version 2>/dev/null | head -1 | awk '{print $3}')"
+  else
+    info "Installing GitHub CLI..."
+    case "$platform" in
+      macos)
+        brew install gh >> "$LOG_FILE" 2>&1 || warn "gh install failed — PR workflow will be limited"
+        ;;
+      linux|wsl)
+        (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
+         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+         sudo apt-get update -qq >> "$LOG_FILE" 2>&1
+         sudo apt-get install -y gh >> "$LOG_FILE" 2>&1) || warn "gh install failed — PR workflow will be limited"
+        ;;
+    esac
+    command -v gh &>/dev/null && success "gh $(gh --version 2>/dev/null | head -1 | awk '{print $3}') installed"
+  fi
+
   if command -v python3 &>/dev/null; then
     success "python3 $(python3 --version 2>/dev/null | awk '{print $2}')"
   else
@@ -1081,6 +1163,18 @@ install_pi() {
       PI_INSTALLED=true
       return 0
     fi
+  fi
+
+  # Try bundled CLI stub from agent tarball (cli/pi/pi generated by build-release.sh)
+  local _bundled_cli="${PI_AGENT_DIR}/cli/pi/pi"
+  if [[ -f "$_bundled_cli" ]]; then
+    local HELIOS_CLI_FALLBACK="$HOME/.helios-cli/helios"
+    mkdir -p "$(dirname "$HELIOS_CLI_FALLBACK")"
+    cp "$_bundled_cli" "$HELIOS_CLI_FALLBACK"
+    chmod +x "$HELIOS_CLI_FALLBACK"
+    success "Helios CLI installed from bundled tarball"
+    PI_INSTALLED=true
+    return 0
   fi
 
   # Architecture:
@@ -1379,7 +1473,39 @@ update_pi_cli() {
   local current_ver
   current_ver=$(_timeout_cmd 10 "$real_cli" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 
-  info "Reinstalling Helios CLI from tarball (current: $current_ver)..."
+  # ── Check if a replacement is available before nuking the existing CLI ──────
+  # If --local-package provides a CLI binary, use it. Otherwise check if remote
+  # download is actually possible (private repos return 404). Never remove a
+  # working CLI if we can't replace it.
+  local _has_replacement=false
+
+  # Path 1: local-package has a CLI binary
+  if [[ -n "${LOCAL_PACKAGE:-}" ]] && [[ -d "$LOCAL_PACKAGE/cli/pi" || -f "$LOCAL_PACKAGE/cli/pi/pi" ]]; then
+    _has_replacement=true
+  fi
+
+  # Path 2: remote download reachable (quick HEAD check)
+  if [[ "$_has_replacement" == "false" ]] && [[ "${OFFLINE_MODE:-false}" != "true" ]]; then
+    local _arch _os _platform_tarball _check_url
+    _arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+    _os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    _platform_tarball="pi-${_os}-${_arch}.tar.gz"
+    _check_url="${HELIOS_CLI_RELEASE_URL}/${_platform_tarball}"
+    local _http_code
+    _http_code=$(curl -sI -o /dev/null -w "%{http_code}" -L --max-time 10 "$_check_url" 2>/dev/null || echo "000")
+    if [[ "$_http_code" == "200" ]]; then
+      _has_replacement=true
+    fi
+  fi
+
+  if [[ "$_has_replacement" == "false" ]]; then
+    # No replacement available — keep existing CLI as-is
+    success "Helios CLI already installed: $current_ver ($real_cli) — no update source available"
+    PI_INSTALLED=true
+    return 0
+  fi
+
+  info "Updating Helios CLI from tarball (current: $current_ver)..."
 
   # Backup the primary binary, then remove ALL known locations so install_pi
   # doesn't find an old copy and short-circuit. Without this, install_pi finds
@@ -1426,7 +1552,38 @@ setup_helios_agent() {
     return 0
   fi
 
-  # Use local package if available (all-in-one tarball)
+  # Use local package if available — either extracted agent/ dir or a tarball file
+  if [[ -n "${LOCAL_PACKAGE:-}" ]] && [[ ! -d "$LOCAL_PACKAGE/agent" ]]; then
+    # LOCAL_PACKAGE points to a dir with tarballs (dist/) — extract to agent/
+    local _local_tarball=""
+    for _t in "${LOCAL_PACKAGE}/${HELIOS_AGENT_TARBALL}" \
+              "${LOCAL_PACKAGE}/${HELIOS_AGENT_TARBALL_UNIVERSAL}" \
+              "${LOCAL_PACKAGE}/helios-agent-latest.tar.gz"; do
+      if [[ -f "$_t" ]]; then
+        _local_tarball="$_t"
+        break
+      fi
+    done
+    if [[ -n "$_local_tarball" ]]; then
+      info "Extracting agent from local tarball: $(basename "$_local_tarball")..."
+      local _extract_tmp
+      _extract_tmp="$(mktemp -d)"
+      if tar -xzf "$_local_tarball" -C "$_extract_tmp" 2>>"${LOG_FILE:-/dev/null}"; then
+        local _extracted_root
+        _extracted_root=$(find "$_extract_tmp" -maxdepth 1 -type d -name "helios-agent-*" | head -1)
+        if [[ -z "$_extracted_root" ]]; then
+          _extracted_root="$_extract_tmp"
+        fi
+        if [[ -d "$_extracted_root/extensions" ]] || [[ -d "$_extracted_root/node_modules" ]]; then
+          mkdir -p "$LOCAL_PACKAGE/agent"
+          cp -a "$_extracted_root/." "$LOCAL_PACKAGE/agent/"
+          info "Tarball extracted to local package cache"
+        fi
+      fi
+      rm -rf "$_extract_tmp"
+    fi
+  fi
+
   if [[ -n "${LOCAL_PACKAGE:-}" ]] && [[ -d "$LOCAL_PACKAGE/agent" ]]; then
     info "Installing agent from local package..."
     local tmp_stash
@@ -1471,6 +1628,14 @@ setup_helios_agent() {
     rm -rf "$tmp_stash" "$trash_dir"
     if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
       cat "$LOCAL_PACKAGE/VERSION" > "$PI_AGENT_DIR/VERSION" 2>/dev/null || echo "local" > "$PI_AGENT_DIR/VERSION"
+    fi
+    if [[ ! -d "$PI_AGENT_DIR/.git" ]] && command -v git &>/dev/null; then
+      git -C "$PI_AGENT_DIR" init -q 2>/dev/null
+      git -C "$PI_AGENT_DIR" config user.email "helios@helios-agi.com" 2>/dev/null
+      git -C "$PI_AGENT_DIR" config user.name "Helios" 2>/dev/null
+      git -C "$PI_AGENT_DIR" add -A 2>/dev/null
+      git -C "$PI_AGENT_DIR" commit -q -m "tarball install" --allow-empty 2>/dev/null
+      git -C "$PI_AGENT_DIR" branch -M main 2>/dev/null
     fi
     _migrate_settings_packages
     _prune_stale_org_dirs
@@ -4167,6 +4332,48 @@ main() {
     if [[ "$_node_major" -gt 22 ]]; then
       warn "Node.js $(node -v) detected — native modules require Node 22.x LTS"
       local _node_fixed=false
+      # Strategy 0: Bundled Node 22 from tarball (.runtime/node22/)
+      local _bundled_node22="${PI_AGENT_DIR}/.runtime/node22/bin/node"
+      if [[ "$_node_fixed" == "false" ]] && [[ -x "$_bundled_node22" ]]; then
+        local _bundled_ver
+        _bundled_ver=$("$_bundled_node22" -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+        if [[ "$_bundled_ver" -le 22 ]] && [[ "$_bundled_ver" -ge 18 ]]; then
+          local _node_install_dir="$HOME/.local/node22"
+          mkdir -p "$_node_install_dir"
+          cp -a "${PI_AGENT_DIR}/.runtime/node22/bin" "$_node_install_dir/"
+          cp -a "${PI_AGENT_DIR}/.runtime/node22/lib" "$_node_install_dir/" 2>/dev/null || true
+          export PATH="$_node_install_dir/bin:$PATH"
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          if [[ "$_node_major" -le 22 ]]; then
+            _node_fixed=true
+            success "Node.js $(node -v) from bundled runtime (no download needed)"
+            if ! grep -q ".local/node22/bin" "$HOME/.bashrc" 2>/dev/null && \
+               ! grep -q ".local/node22/bin" "$HOME/.zshrc" 2>/dev/null && \
+               ! grep -q ".local/node22/bin" "$HOME/.profile" 2>/dev/null; then
+              local _shell_rc="$HOME/.bashrc"
+              [[ -f "$HOME/.zshrc" ]] && _shell_rc="$HOME/.zshrc"
+              [[ ! -f "$_shell_rc" ]] && _shell_rc="$HOME/.profile"
+              echo "export PATH=\"\$HOME/.local/node22/bin:\$PATH\"" >> "$_shell_rc" 2>/dev/null || true
+              info "Added Node 22 to PATH in $(basename "$_shell_rc") for new terminals"
+            fi
+          fi
+        fi
+      fi
+      # Strategy 0.5: Existing sidecar from a previous install (~/.local/node22/)
+      if [[ "$_node_fixed" == "false" ]] && [[ -x "$HOME/.local/node22/bin/node" ]]; then
+        local _existing_ver
+        _existing_ver=$("$HOME/.local/node22/bin/node" -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+        if [[ "$_existing_ver" -le 22 ]] && [[ "$_existing_ver" -ge 18 ]]; then
+          export PATH="$HOME/.local/node22/bin:$PATH"
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          if [[ "$_node_major" -le 22 ]]; then
+            _node_fixed=true
+            success "Node.js $(node -v) from existing sidecar (~/.local/node22)"
+          fi
+        fi
+      fi
       # Strategy 1: nvm (most common version manager)
       if [[ "$_node_fixed" == "false" ]] && [[ -s "$HOME/.nvm/nvm.sh" ]]; then
         info "Switching to Node 22 via nvm..."
@@ -4258,7 +4465,13 @@ main() {
         _arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
         _os=$(uname -s | tr '[:upper:]' '[:lower:]')
         _node_install_dir="$HOME/.local/node22"
-        info "Downloading Node 22 binary directly..."
+        if [[ -x "$_node_install_dir/bin/node" ]]; then
+          # Sidecar exists but wasn't caught by Strategy 0.5 (wrong version/arch?)
+          # Overwrite with a fresh download
+          info "Existing sidecar invalid — re-downloading Node 22..."
+        else
+          info "Downloading Node 22 binary directly..."
+        fi
         local _dl_ok=false
         if command -v xz &>/dev/null || tar --help 2>&1 | grep -q 'xz'; then
           local _xz_tarball="node-v22.22.0-${_os}-${_arch}.tar.xz"
@@ -4327,18 +4540,31 @@ main() {
       fi
     fi
     ulimit -n 4096 2>/dev/null || ulimit -n 1024 2>/dev/null || true
-    # Ensure bun is available (CLI binary requires it for package resolution)
     if ! command -v bun &>/dev/null; then
-      info "Installing Bun (required by Helios CLI)..."
-      if _timeout_cmd 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
+      # Try bundled Bun from tarball first
+      local _bundled_bun="${PI_AGENT_DIR}/.runtime/bun/bin/bun"
+      if [[ -x "$_bundled_bun" ]]; then
+        mkdir -p "$HOME/.bun/bin"
+        cp "$_bundled_bun" "$HOME/.bun/bin/bun"
+        chmod +x "$HOME/.bun/bin/bun"
         export PATH="$HOME/.bun/bin:$PATH"
         hash -r 2>/dev/null || true
         if command -v bun &>/dev/null; then
-          success "Bun $(bun --version) installed"
+          success "Bun $(bun --version) from bundled runtime"
         fi
-      else
-        warn "Bun installation failed — CLI binary may not work correctly"
-        warn "Install manually: curl -fsSL https://bun.sh/install | bash"
+      fi
+      if ! command -v bun &>/dev/null; then
+        info "Installing Bun (required by Helios CLI)..."
+        if _timeout_cmd 60 bash -c 'curl -fsSL --max-time 30 https://bun.sh/install | BUN_INSTALL="$HOME/.bun" bash' >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          export PATH="$HOME/.bun/bin:$PATH"
+          hash -r 2>/dev/null || true
+          if command -v bun &>/dev/null; then
+            success "Bun $(bun --version) installed"
+          fi
+        else
+          warn "Bun installation failed — CLI binary may not work correctly"
+          warn "Install manually: curl -fsSL https://bun.sh/install | bash"
+        fi
       fi
     fi
     # Ensure bun global dir is usable (prevents "bun pm bin -g" crash on update)

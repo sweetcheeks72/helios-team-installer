@@ -387,3 +387,125 @@ bash ~/helios-team-installer/install.sh
 ## License
 
 Internal tooling — for team use only.
+
+---
+
+## Installer Internals
+
+### Build Pipeline
+
+```
+build-release.sh
+├── Copies ~/.pi/agent/ → staging (excluding .git, sessions, user data)
+├── Bundles 20 git packages from git/github.com/helios-agi/*
+├── Runs npm install --production (self-contained node_modules)
+├── Bundles runtime deps into .runtime/:
+│   ├── .runtime/node22/       — Node 22 LTS binary for target platform
+│   ├── .runtime/bun/          — Bun binary for target platform
+│   └── cli/pi/pi              — CLI stub (Node script → pi-coding-agent)
+├── Generates settings.json with local package paths (no git: URLs)
+├── Keeps better-sqlite3 prebuilt binary (platform-specific)
+├── Creates per-platform tarball: helios-agent-v{VER}-{os}-{arch}.tar.gz
+└── Verifies: critical paths, ESM import, package count, node_modules
+
+Output in dist/:
+  helios-agent-latest-darwin-arm64.tar.gz   (~105 MB)
+  helios-agent-latest-darwin-x64.tar.gz     (~107 MB)
+  helios-agent-latest.tar.gz                (~100 MB, linux-x64)
+```
+
+### Tarball Contents
+
+```
+helios-agent-v{VERSION}/
+├── .runtime/
+│   ├── node22/bin/node        — Node 22 binary (no download needed at install)
+│   ├── bun/bin/bun            — Bun binary (no download needed at install)
+├── cli/pi/pi                  — CLI stub script (no helios-installer download)
+├── node_modules/              — Pre-installed production deps (~100MB)
+│   ├── @helios-agent/pi-coding-agent/  — Core CLI + agent runtime
+│   ├── better-sqlite3/build/  — Prebuilt native binary for target Node 22
+│   ├── neo4j-driver/          — Memgraph client
+│   ├── awilix/                — DI container
+│   └── ...
+├── git/github.com/helios-agi/ — 20 bundled packages (local, no git fetch)
+├── extensions/                — Governance, mesh, browse, etc.
+├── agents/                    — 50+ agent definitions (.md)
+├── skills/                    — 13+ skill definitions
+├── settings.json              — Default provider config (local package paths)
+├── package.json               — Root deps manifest
+└── VERSION                    — Release version string
+```
+
+### Install Flow (install.sh)
+
+```
+install.sh --update
+│
+├── [1/7] Legacy Install Doctor
+│   ├── Detects Node version (if >22: resolve from bundled .runtime/node22 first)
+│   ├── Resolution priority: bundled → nvm → fnm → volta → mise → asdf → brew → apt → direct download
+│   ├── Bun: bundled .runtime/bun first, then curl bun.sh fallback
+│   └── All bundled = no network needed for prerequisites
+│
+├── [2/7] Helios CLI
+│   ├── update_pi_cli(): checks if replacement available before acting
+│   ├── Tries: LOCAL_PACKAGE/cli → bundled PI_AGENT_DIR/cli/pi/pi → existing binary → download
+│   └── Private repo safe: won't delete working CLI if download would 404
+│
+├── [3/7] Agent Directory
+│   ├── Extracts tarball → ~/.pi/agent/ (preserves user files: .env, settings.json, auth.json)
+│   └── Uses HELIOS_PRESERVE_FILES array for merge-safe extraction
+│
+├── [4/7] Helios CLI (wrapper)
+│   └── Creates ~/.pi/agent/bin/helios + ~/.local/bin/helios symlink
+│
+├── [5/7] Agent Root Deps
+│   └── npm install (--prefer-offline, uses bundled node_modules as cache)
+│
+├── [6/7] Helios Packages
+│   └── Installs git packages from local paths (no git clone of private repos)
+│
+└── [7/7] Skill Dependencies
+    └── npm install for individual skill/extension package.json files
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Per-platform tarballs | Native modules (better-sqlite3) are ABI-specific; universal tarballs can't ship prebuilts |
+| Bundle Node 22 in tarball | Users on Node 24/25 hit ABI mismatch; downloading at runtime fails on firewalled networks |
+| Bundle Bun in tarball | bun.sh/install fails in corporate/air-gapped environments |
+| CLI is a stub, not a binary | pi-coding-agent is already in node_modules; no separate repo download needed |
+| Don't strip better-sqlite3/build | Tarball is already platform-specific; stripping forces a prebuild download that may fail offline |
+| Check replacement before deleting CLI | Private repos 404; deleting a working CLI then failing to replace it breaks the install |
+| Local package paths in settings.json | Prevents `pi update` from git-fetching private repos users can't access |
+| Filesystem lock with platform-aware stat | macOS uses `stat -f %m`, Linux uses `stat -c %Y`; combined one-liner breaks on Linux |
+
+### Runtime Download Fallback Chain
+
+When bundled runtime is missing (e.g., older tarball), the installer falls back to downloads:
+
+```
+Node 22: bundled → nvm → fnm → volta → mise → asdf → brew → apt/dnf → direct download → FAIL
+Bun:     bundled → curl bun.sh → FAIL (non-fatal warning)
+CLI:     bundled → LOCAL_PACKAGE → existing binary → GitHub download → FAIL
+Agent:   LOCAL_PACKAGE → arch-specific URL → universal URL → gh CLI → FAIL
+```
+
+### File Locations (installed state)
+
+```
+~/.pi/agent/                    — Main agent directory (from tarball)
+~/.pi/agent/.runtime/node22/    — Bundled Node 22 (source for ~/.local/node22/)
+~/.pi/agent/.runtime/bun/       — Bundled Bun (source for ~/.bun/bin/)
+~/.pi/agent/cli/pi/pi           — Bundled CLI stub (source for ~/.helios-cli/helios)
+~/.pi/agent/bin/helios          — CLI wrapper script (product, never removed)
+~/.local/node22/bin/node        — Active Node 22 sidecar (in PATH)
+~/.local/bin/helios             — Symlink → ~/.pi/agent/bin/helios
+~/.helios-cli/helios            — Real CLI entry point
+~/.bun/bin/bun                  — Bun binary
+~/.pi/.installer-lock/          — Filesystem mutex (cleaned on exit)
+~/helios-team-installer/        — Installer repo (contains install.sh, build-release.sh, dist/)
+```

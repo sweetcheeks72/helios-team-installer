@@ -550,9 +550,77 @@ TOTAL_NM_SIZE="$(du -sh "${STAGE_DIR}/node_modules" 2>/dev/null | cut -f1 || ech
 echo ""
 echo "📊 Bundled node_modules size: ${TOTAL_NM_SIZE}"
 
-# Strip ABI-specific native binaries — installer runs prebuild-install for target Node version
-rm -rf "${STAGE_DIR}/node_modules/better-sqlite3/build" 2>/dev/null
-echo "🧹 Stripped better-sqlite3 compiled binary (will prebuild-install on target)"
+# Keep better-sqlite3 prebuilt binary — tarball is already platform-specific.
+# The installer verifies ABI compatibility and only rebuilds if Node version mismatches.
+echo "✅ Keeping better-sqlite3 prebuilt binary (platform-specific tarball)"
+
+# ---------------------------------------------------------------------------
+# Bundle runtime dependencies (Node 22, Bun, CLI stub)
+# ---------------------------------------------------------------------------
+# These are bundled per-platform so the installer works fully offline.
+# Fallback download logic remains for forward-compatibility.
+
+echo ""
+echo "📦 Bundling runtime dependencies for ${BUILD_OS}-${BUILD_ARCH}..."
+
+RUNTIME_DIR="${STAGE_DIR}/.runtime"
+mkdir -p "${RUNTIME_DIR}"
+
+# ── Node 22 LTS ──────────────────────────────────────────────────────────────
+NODE22_VERSION="22.22.0"
+NODE22_TARBALL="node-v${NODE22_VERSION}-${BUILD_OS}-${BUILD_ARCH}.tar.xz"
+NODE22_URL="https://nodejs.org/dist/v${NODE22_VERSION}/${NODE22_TARBALL}"
+NODE22_DEST="${RUNTIME_DIR}/node22"
+
+echo "  → Bundling Node.js v${NODE22_VERSION} (${BUILD_OS}-${BUILD_ARCH})..."
+if [[ -d "$HOME/.local/node22/bin" ]] && "$HOME/.local/node22/bin/node" -v 2>/dev/null | grep -q "v${NODE22_VERSION}"; then
+  # Reuse local sidecar if it matches
+  mkdir -p "${NODE22_DEST}"
+  cp -a "$HOME/.local/node22/bin" "${NODE22_DEST}/"
+  cp -a "$HOME/.local/node22/lib" "${NODE22_DEST}/" 2>/dev/null || true
+  echo "  ✅ Node 22 bundled from local sidecar"
+elif curl -fsSL --max-time 120 "${NODE22_URL}" -o "/tmp/${NODE22_TARBALL}" 2>/dev/null; then
+  mkdir -p "${NODE22_DEST}"
+  tar -xJf "/tmp/${NODE22_TARBALL}" -C "${NODE22_DEST}" --strip-components=1
+  rm -f "/tmp/${NODE22_TARBALL}"
+  echo "  ✅ Node 22 downloaded and bundled"
+else
+  echo "  ⚠ Could not bundle Node 22 — installer will download at runtime"
+fi
+
+# ── Bun ───────────────────────────────────────────────────────────────────────
+BUN_DEST="${RUNTIME_DIR}/bun"
+
+echo "  → Bundling Bun..."
+if command -v bun &>/dev/null; then
+  BUN_BIN="$(command -v bun)"
+  BUN_VER="$(bun --version 2>/dev/null || echo unknown)"
+  mkdir -p "${BUN_DEST}/bin"
+  cp "$BUN_BIN" "${BUN_DEST}/bin/bun"
+  chmod +x "${BUN_DEST}/bin/bun"
+  echo "  ✅ Bun ${BUN_VER} bundled from local install"
+else
+  echo "  ⚠ Bun not found locally — installer will download at runtime"
+fi
+
+# ── CLI stub ──────────────────────────────────────────────────────────────────
+# The CLI is a Node script that loads pi-coding-agent (already in node_modules).
+# We generate the stub here so install.sh never needs to download from helios-installer.
+CLI_DIR="${STAGE_DIR}/cli/pi"
+mkdir -p "${CLI_DIR}"
+cat > "${CLI_DIR}/pi" << 'CLISTUB'
+#!/usr/bin/env node
+const path = require("path");
+const agentDir = path.resolve(__dirname, "../..");
+require(path.join(agentDir, "node_modules/@helios-agent/pi-coding-agent/dist/cli.js"));
+CLISTUB
+chmod +x "${CLI_DIR}/pi"
+echo "  ✅ CLI stub generated"
+
+# Report bundled runtime size
+RUNTIME_SIZE="$(du -sh "${RUNTIME_DIR}" 2>/dev/null | cut -f1 || echo "0")"
+echo ""
+echo "📊 Bundled runtime size: ${RUNTIME_SIZE}"
 
 # ---------------------------------------------------------------------------
 # Create tarball

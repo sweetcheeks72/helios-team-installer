@@ -807,10 +807,34 @@ check_prerequisites() {
         fi
       fi
       if [[ "$node_ok" == false ]]; then
-        warn "Could not auto-downgrade Node. Install Node ${NODE_MAJOR_MAX} LTS manually:"
-        warn "  brew install node@${NODE_MAJOR_MAX} && brew link --overwrite node@${NODE_MAJOR_MAX}"
-        warn "Continuing with $(node -v) — native module rebuild will be attempted"
-        node_ok=true  # allow install to continue; repair will be attempted later
+        if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+          info "Attempting Node 22 via nvm..."
+          . "$HOME/.nvm/nvm.sh" 2>/dev/null
+          nvm install 22 --lts >> "${LOG_FILE:-/dev/null}" 2>&1 && nvm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          if command -v node &>/dev/null; then
+            node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+            [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via nvm"
+          fi
+        fi
+        if [[ "$node_ok" == false ]] && command -v fnm &>/dev/null; then
+          fnm install 22 >> "${LOG_FILE:-/dev/null}" 2>&1 && eval "$(fnm env)" 2>/dev/null && fnm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via fnm"
+        fi
+        if [[ "$node_ok" == false ]] && command -v volta &>/dev/null; then
+          volta install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via volta"
+        fi
+      fi
+      if [[ "$node_ok" == false ]]; then
+        error "Node.js $(node -v) is too new — native modules require Node ${NODE_MAJOR_MAX}.x LTS"
+        error "Install Node 22 LTS manually, then re-run this installer:"
+        error "  • nvm install 22 && nvm alias default 22"
+        error "  • brew install node@${NODE_MAJOR_MAX} && brew link --overwrite node@${NODE_MAJOR_MAX}"
+        error "  • fnm install 22 && fnm default 22"
+        error "  • volta install node@22"
+        exit 1
       fi
     else
       warn "Node.js $(node -v) is too old (need ${NODE_MAJOR_MIN}+) — upgrading..."
@@ -2193,7 +2217,11 @@ _verify_native_modules() {
   local _native_failures=()
   for _mod in better-sqlite3 koffi tree-sitter tree-sitter-typescript tree-sitter-javascript; do
     if [[ -d "$PI_AGENT_DIR/node_modules/$_mod" ]]; then
-      if ! _timeout_cmd 10 node -e "require('$PI_AGENT_DIR/node_modules/$_mod')" 2>/dev/null; then
+      local _check_script="require('$PI_AGENT_DIR/node_modules/$_mod')"
+      if [[ "$_mod" == "better-sqlite3" ]]; then
+        _check_script="const D=require('$PI_AGENT_DIR/node_modules/$_mod');const db=new D(':memory:');db.close()"
+      fi
+      if ! _timeout_cmd 10 node -e "$_check_script" 2>/dev/null; then
         _native_failures+=("$_mod")
       fi
     fi
@@ -2224,9 +2252,17 @@ install_agent_deps() {
     return 0
   fi
 
+  # Recover from a previous interrupted install that left backup orphaned
+  if [[ -d "$PI_AGENT_DIR/node_modules.pre-install-backup" ]] && [[ ! -d "$PI_AGENT_DIR/node_modules" ]]; then
+    warn "Recovering node_modules from interrupted previous install..."
+    mv "$PI_AGENT_DIR/node_modules.pre-install-backup" "$PI_AGENT_DIR/node_modules"
+  elif [[ -d "$PI_AGENT_DIR/node_modules.pre-install-backup" ]] && [[ -d "$PI_AGENT_DIR/node_modules" ]]; then
+    rm -rf "$PI_AGENT_DIR/node_modules.pre-install-backup"
+  fi
+
   _better_sqlite3_ok() {
     [[ -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]] || return 0
-    _timeout_cmd 15 node -e "require('$PI_AGENT_DIR/node_modules/better-sqlite3')" 2>/dev/null
+    _timeout_cmd 15 node -e "const D=require('$PI_AGENT_DIR/node_modules/better-sqlite3');const db=new D(':memory:');db.close()" 2>/dev/null
   }
 
   _repair_better_sqlite3() {
@@ -2261,7 +2297,7 @@ install_agent_deps() {
     fi
 
     run_with_spinner "Rebuild better-sqlite3 from source" \
-      bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && npm rebuild better-sqlite3 --build-from-source --ignore-scripts=false 2>&1" || {
       warn "better-sqlite3 rebuild failed"
     }
 
@@ -2270,16 +2306,25 @@ install_agent_deps() {
       return 0
     fi
 
-    # Attempt 3: full reinstall
-    rm -rf "$PI_AGENT_DIR/node_modules/better-sqlite3"
+    # Attempt 3: full reinstall (backup first to avoid losing tarball prebuilts)
+    local _bs3_backup="$PI_AGENT_DIR/node_modules/.better-sqlite3-backup"
+    mv "$PI_AGENT_DIR/node_modules/better-sqlite3" "$_bs3_backup" 2>/dev/null || true
     run_with_spinner "Reinstall better-sqlite3" \
-      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund --build-from-source 2>&1" || {
+      bash -c "cd '$PI_AGENT_DIR' && npm install better-sqlite3 --no-audit --no-fund --build-from-source --ignore-scripts=false 2>&1" || {
       warn "better-sqlite3 reinstall failed"
     }
 
     if _better_sqlite3_ok; then
+      rm -rf "$_bs3_backup"
       success "better-sqlite3 reinstalled for Node ${node_ver} ✓"
       return 0
+    fi
+
+    # Reinstall failed — restore backup if new version doesn't load
+    if [[ -d "$_bs3_backup" ]] && [[ ! -d "$PI_AGENT_DIR/node_modules/better-sqlite3" ]]; then
+      mv "$_bs3_backup" "$PI_AGENT_DIR/node_modules/better-sqlite3" 2>/dev/null || true
+    else
+      rm -rf "$_bs3_backup"
     fi
 
     # Attempt 4: try with explicit --target flag matching current Node
@@ -2336,11 +2381,24 @@ install_agent_deps() {
     else
       info "Deps present but native modules need rebuild for $(uname -m)..."
       if _repair_better_sqlite3; then
+        _verify_native_modules
         success "Native modules repaired ✓"
+        return 0
       else
+        local _repair_node_major
+        _repair_node_major=$(node -e 'console.log(parseInt(process.version.slice(1)))' 2>/dev/null || echo 0)
+        if [[ "$_repair_node_major" -gt 22 ]]; then
+          error "better-sqlite3 cannot load — Node $(node -v) is incompatible (need Node 22.x LTS)"
+          error "Fix: install Node 22 and re-run the installer"
+          if command -v brew &>/dev/null; then
+            error "  brew install node@22 && brew link --overwrite node@22"
+          fi
+          INSTALL_WARNINGS+=("better-sqlite3 BROKEN — Node $(node -v) incompatible, need Node 22 LTS")
+          return 1
+        fi
         warn "better-sqlite3 native module unavailable — graph cache disabled (non-fatal)"
+        return 0
       fi
-      return 0
     fi
   fi
 
@@ -4099,6 +4157,174 @@ main() {
     if ! command -v npm &>/dev/null; then
       error "npm not found — required for update. Install Node.js from https://nodejs.org"
       exit 1
+    fi
+    # ── Node version compatibility (update mode) ─────────────────────────────
+    # Tarball ships prebuilt native modules for Node 22 LTS only. If the user
+    # has a newer Node (e.g. 24/25), better-sqlite3 will crash at runtime with
+    # "Could not locate the bindings file" (ABI mismatch). Enforce Node 22.
+    local _node_major
+    _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+    if [[ "$_node_major" -gt 22 ]]; then
+      warn "Node.js $(node -v) detected — native modules require Node 22.x LTS"
+      local _node_fixed=false
+      # Strategy 1: nvm (most common version manager)
+      if [[ "$_node_fixed" == "false" ]] && [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+        info "Switching to Node 22 via nvm..."
+        unset PREFIX 2>/dev/null || true
+        . "$HOME/.nvm/nvm.sh" 2>/dev/null
+        if nvm install 22 --lts >> "${LOG_FILE:-/dev/null}" 2>&1 && nvm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          nvm alias default 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via nvm (set as default)"
+        fi
+      fi
+      # Strategy 2: fnm
+      if [[ "$_node_fixed" == "false" ]] && command -v fnm &>/dev/null; then
+        info "Switching to Node 22 via fnm..."
+        if fnm install 22 >> "${LOG_FILE:-/dev/null}" 2>&1 && eval "$(fnm env --shell bash)" 2>/dev/null && fnm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          fnm default 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via fnm (set as default)"
+        fi
+      fi
+      # Strategy 3: volta (persists globally by design)
+      if [[ "$_node_fixed" == "false" ]] && command -v volta &>/dev/null; then
+        info "Pinning Node 22 via volta..."
+        if volta install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via volta (pinned globally)"
+        fi
+      fi
+      # Strategy 4: mise (formerly rtx) — persists via `use --global`
+      if [[ "$_node_fixed" == "false" ]] && command -v mise &>/dev/null; then
+        info "Installing Node 22 via mise..."
+        if mise install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 && mise use --global node@22 >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          eval "$(mise env)" 2>/dev/null || true
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via mise (set as global)"
+        fi
+      fi
+      # Strategy 5: asdf — persists via `global`
+      if [[ "$_node_fixed" == "false" ]] && command -v asdf &>/dev/null; then
+        info "Installing Node 22 via asdf..."
+        asdf plugin add nodejs >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+        if asdf install nodejs 22.22.0 >> "${LOG_FILE:-/dev/null}" 2>&1 && asdf global nodejs 22.22.0 >> "${LOG_FILE:-/dev/null}" 2>&1; then
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via asdf (set as global)"
+        fi
+      fi
+      # Strategy 6: Homebrew (macOS) — must unlink conflicting node first
+      if [[ "$_node_fixed" == "false" ]] && [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
+        info "Installing Node 22 LTS via Homebrew..."
+        brew unlink node >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+        brew install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+        brew link --overwrite node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || {
+          brew link --force node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || {
+            sudo brew link --overwrite node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          }
+        }
+        hash -r 2>/dev/null || true
+        if command -v node &>/dev/null; then
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via Homebrew"
+        fi
+      fi
+      # Strategy 7: Linux package managers (apt/dnf)
+      if [[ "$_node_fixed" == "false" ]] && [[ "$(uname -s)" == "Linux" ]]; then
+        if command -v apt-get &>/dev/null && [[ -w "/usr" || "$EUID" -eq 0 ]]; then
+          info "Installing Node 22 via NodeSource apt..."
+          (curl -fsSL https://deb.nodesource.com/setup_22.x | bash -) >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          apt-get install -y nodejs >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via apt"
+        elif command -v dnf &>/dev/null && [[ -w "/usr" || "$EUID" -eq 0 ]]; then
+          info "Installing Node 22 via NodeSource dnf..."
+          (curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -) >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          dnf install -y nodejs >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          [[ "$_node_major" -le 22 ]] && _node_fixed=true && success "Node.js $(node -v) via dnf"
+        fi
+      fi
+      # Strategy 8: Direct binary download (Docker, CI, bare environments)
+      if [[ "$_node_fixed" == "false" ]]; then
+        local _arch _os _node_install_dir
+        _arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        _node_install_dir="$HOME/.local/node22"
+        info "Downloading Node 22 binary directly..."
+        local _dl_ok=false
+        if command -v xz &>/dev/null || tar --help 2>&1 | grep -q 'xz'; then
+          local _xz_tarball="node-v22.22.0-${_os}-${_arch}.tar.xz"
+          if curl -fsSL --max-time 120 "https://nodejs.org/dist/v22.22.0/${_xz_tarball}" -o "/tmp/${_xz_tarball}" 2>>"${LOG_FILE:-/dev/null}"; then
+            mkdir -p "$_node_install_dir"
+            tar -xJf "/tmp/${_xz_tarball}" -C "$_node_install_dir" --strip-components=1 2>>"${LOG_FILE:-/dev/null}" && _dl_ok=true
+            rm -f "/tmp/${_xz_tarball}"
+          fi
+        fi
+        if [[ "$_dl_ok" == "false" ]]; then
+          local _gz_tarball="node-v22.22.0-${_os}-${_arch}.tar.gz"
+          if curl -fsSL --max-time 120 "https://nodejs.org/dist/v22.22.0/${_gz_tarball}" -o "/tmp/${_gz_tarball}" 2>>"${LOG_FILE:-/dev/null}"; then
+            mkdir -p "$_node_install_dir"
+            tar -xzf "/tmp/${_gz_tarball}" -C "$_node_install_dir" --strip-components=1 2>>"${LOG_FILE:-/dev/null}" && _dl_ok=true
+            rm -f "/tmp/${_gz_tarball}"
+          fi
+        fi
+        if [[ "$_dl_ok" == "true" ]] && [[ -x "$_node_install_dir/bin/node" ]]; then
+          export PATH="$_node_install_dir/bin:$PATH"
+          hash -r 2>/dev/null || true
+          _node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
+          if [[ "$_node_major" -le 22 ]]; then
+            _node_fixed=true
+            success "Node.js $(node -v) via direct download ($HOME/.local/node22)"
+            if ! grep -q ".local/node22/bin" "$HOME/.bashrc" 2>/dev/null && \
+               ! grep -q ".local/node22/bin" "$HOME/.zshrc" 2>/dev/null && \
+               ! grep -q ".local/node22/bin" "$HOME/.profile" 2>/dev/null; then
+              local _shell_rc="$HOME/.bashrc"
+              [[ -f "$HOME/.zshrc" ]] && _shell_rc="$HOME/.zshrc"
+              [[ ! -f "$_shell_rc" ]] && _shell_rc="$HOME/.profile"
+              echo "export PATH=\"\$HOME/.local/node22/bin:\$PATH\"" >> "$_shell_rc" 2>/dev/null || true
+              info "Added Node 22 to PATH in $(basename "$_shell_rc") for new terminals"
+            fi
+          fi
+        fi
+      fi
+      # If still not fixed — hard fail with actionable instructions
+      if [[ "$_node_fixed" == "false" ]]; then
+        echo ""
+        error "═══════════════════════════════════════════════════════════════════════"
+        error "  BLOCKING: Node.js $(node -v) is incompatible with Helios native modules"
+        error "  Helios requires Node.js 22.x LTS (prebuilt binaries only exist for v22)"
+        error ""
+        error "  Fix (pick one):"
+        error "    • nvm install 22 && nvm use 22 && nvm alias default 22"
+        error "    • brew install node@22 && brew link --overwrite node@22"
+        error "    • fnm install 22 && fnm default 22"
+        error "    • volta install node@22"
+        error "    • mise use --global node@22"
+        error "    • asdf install nodejs 22.22.0 && asdf global nodejs 22.22.0"
+        error ""
+        error "  Then re-run: bash ~/helios-team-installer/install.sh"
+        error "═══════════════════════════════════════════════════════════════════════"
+        exit 1
+      fi
+      # Verify architecture matches the native module prebuilds in tarball
+      local _node_arch
+      _node_arch=$(node -e "console.log(process.arch)" 2>/dev/null || echo "unknown")
+      local _system_arch
+      _system_arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/;s/arm64/arm64/')
+      if [[ "$_node_arch" != "$_system_arch" ]]; then
+        warn "Architecture mismatch: Node reports '$_node_arch' but system is '$_system_arch'"
+        warn "Native modules will crash — likely running under Rosetta (x86 emulation)"
+        warn "Fix: install native arm64 Node 22 — brew install node@22 (without Rosetta)"
+        INSTALL_WARNINGS+=("Node arch mismatch: node=$_node_arch system=$_system_arch — native modules may fail")
+      fi
     fi
     ulimit -n 4096 2>/dev/null || ulimit -n 1024 2>/dev/null || true
     # Ensure bun is available (CLI binary requires it for package resolution)

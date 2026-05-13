@@ -6,6 +6,8 @@ on:
         description: "Release tag to upload to (default: latest)"
         required: false
         default: ""
+  repository_dispatch:
+    types: [rebuild-assets]
 
 jobs:
   upload:
@@ -299,27 +301,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Delete stale assets
-        run: |
-          RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
-          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases/tags/$RELEASE_TAG --jq '.id')
-          for name in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
-                      helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
-            asset_id=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$name\") | .id" 2>/dev/null || true)
-            if [[ -n "$asset_id" ]]; then
-              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$asset_id" && echo "Deleted $name"
-            fi
-          done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload assets
+      - name: Upload assets (clobber existing — atomic from user perspective)
         run: |
           RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
           for f in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
                    helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
             echo "Uploading $f..."
-            gh release upload "$RELEASE_TAG" "/tmp/$f" --repo ${{ github.repository }}
+            gh release upload "$RELEASE_TAG" "/tmp/$f" --repo ${{ github.repository }} --clobber
             sleep 2
             echo "✓ $f uploaded"
           done

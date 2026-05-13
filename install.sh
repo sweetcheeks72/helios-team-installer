@@ -1795,10 +1795,7 @@ setup_helios_agent() {
     _prune_stale_org_dirs
 
     success "Helios agent updated to $remote_version"
-    # Ensure VERSION file exists after update
-    if [[ ! -f "$PI_AGENT_DIR/VERSION" ]]; then
-      echo "$remote_version" > "$PI_AGENT_DIR/VERSION"
-    fi
+    echo "$remote_version" > "$PI_AGENT_DIR/VERSION"
 
     # /update uses tarball mechanism (same as this installer) — no git needed
     return 0

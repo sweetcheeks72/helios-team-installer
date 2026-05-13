@@ -1,0 +1,31 @@
+name: Rebuild release on agent update
+
+on:
+  repository_dispatch:
+    types: [agent-updated]
+
+jobs:
+  rebuild-assets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve latest release tag
+        id: release
+        run: |
+          TAG=$(gh release view --json tagName --jq '.tagName')
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Rebuilding assets for $TAG"
+          echo "Triggered by agent commit: ${{ github.event.client_payload.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger upload-assets rebuild
+        run: |
+          gh workflow run upload-assets.yml \
+            --field release_tag="${{ steps.release.outputs.tag }}"
+          echo "✓ upload-assets.yml dispatched for ${{ steps.release.outputs.tag }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

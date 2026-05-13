@@ -815,20 +815,26 @@ check_prerequisites() {
       if [[ "$node_ok" == false ]]; then
         if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
           info "Attempting Node 22 via nvm..."
+          unset PREFIX 2>/dev/null || true
           . "$HOME/.nvm/nvm.sh" 2>/dev/null
           nvm install 22 --lts >> "${LOG_FILE:-/dev/null}" 2>&1 && nvm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          nvm alias default 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
           if command -v node &>/dev/null; then
             node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
             [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via nvm"
           fi
         fi
         if [[ "$node_ok" == false ]] && command -v fnm &>/dev/null; then
-          fnm install 22 >> "${LOG_FILE:-/dev/null}" 2>&1 && eval "$(fnm env)" 2>/dev/null && fnm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          fnm install 22 >> "${LOG_FILE:-/dev/null}" 2>&1 && eval "$(fnm env --shell bash)" 2>/dev/null && fnm use 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          fnm default 22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
           node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
           [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via fnm"
         fi
         if [[ "$node_ok" == false ]] && command -v volta &>/dev/null; then
           volta install node@22 >> "${LOG_FILE:-/dev/null}" 2>&1 || true
+          hash -r 2>/dev/null || true
           node_major=$(node -e "console.log(parseInt(process.version.slice(1)))" 2>/dev/null || echo 0)
           [[ "$node_major" -le "$NODE_MAJOR_MAX" ]] && node_ok=true && success "Node.js $(node -v) via volta"
         fi

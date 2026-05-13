@@ -61,6 +61,16 @@ jobs:
           tar xzf /tmp/fd/fd-arm64.tar.gz -C /tmp/fd/ && mv /tmp/fd/fd-v10.2.0-aarch64-apple-darwin/fd /tmp/fd/fd-arm64
           tar xzf /tmp/fd/fd-x64.tar.gz -C /tmp/fd/ && mv /tmp/fd/fd-v10.2.0-x86_64-apple-darwin/fd /tmp/fd/fd-x64
           
+          # Download Node 22 LTS binaries (bundled runtime for users on Node 24+)
+          mkdir -p /tmp/node22
+          NODE22_VER="22.22.0"
+          curl -fsSL "https://nodejs.org/dist/v${NODE22_VER}/node-v${NODE22_VER}-darwin-arm64.tar.gz" -o /tmp/node22/node22-arm64.tar.gz
+          curl -fsSL "https://nodejs.org/dist/v${NODE22_VER}/node-v${NODE22_VER}-darwin-x64.tar.gz" -o /tmp/node22/node22-x64.tar.gz
+          mkdir -p /tmp/node22/arm64 /tmp/node22/x64
+          tar xzf /tmp/node22/node22-arm64.tar.gz --strip-components=1 -C /tmp/node22/arm64
+          tar xzf /tmp/node22/node22-x64.tar.gz --strip-components=1 -C /tmp/node22/x64
+          echo "✓ Downloaded Node ${NODE22_VER} for arm64 + x64"
+          
           mkdir -p /tmp/build-arm64
           
           # Extract agent tarball
@@ -217,6 +227,17 @@ jobs:
           # Set correct fd binary per architecture
           cp /tmp/fd/fd-arm64 /tmp/pkg-arm64/helios/agent/bin/fd && chmod +x /tmp/pkg-arm64/helios/agent/bin/fd
           cp /tmp/fd/fd-x64 /tmp/pkg-x64/helios/agent/bin/fd && chmod +x /tmp/pkg-x64/helios/agent/bin/fd
+          
+          # Bundle Node 22 runtime (Strategy 0 in installer — avoids download for Node 24+ users)
+          mkdir -p /tmp/pkg-arm64/helios/agent/.runtime/node22/{bin,lib}
+          mkdir -p /tmp/pkg-x64/helios/agent/.runtime/node22/{bin,lib}
+          cp /tmp/node22/arm64/bin/node /tmp/pkg-arm64/helios/agent/.runtime/node22/bin/
+          cp -a /tmp/node22/arm64/lib/node_modules /tmp/pkg-arm64/helios/agent/.runtime/node22/lib/ 2>/dev/null || true
+          cp /tmp/node22/x64/bin/node /tmp/pkg-x64/helios/agent/.runtime/node22/bin/
+          cp -a /tmp/node22/x64/lib/node_modules /tmp/pkg-x64/helios/agent/.runtime/node22/lib/ 2>/dev/null || true
+          chmod +x /tmp/pkg-arm64/helios/agent/.runtime/node22/bin/node
+          chmod +x /tmp/pkg-x64/helios/agent/.runtime/node22/bin/node
+          echo "✓ Bundled Node 22 runtime for both architectures"
           
           # Copy installer
           cp install.sh /tmp/pkg-arm64/helios/installer/

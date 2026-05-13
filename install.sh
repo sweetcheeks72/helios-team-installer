@@ -5,7 +5,7 @@
 # Installs: Helios CLI, Helios Agent, 20 git packages, extensions, Familiar skills,
 # API key setup
 # =============================================================================
-INSTALLER_VERSION="2.1.0"
+INSTALLER_VERSION="2.2.0"
 
 set -euo pipefail
 INSTALL_WARNINGS=()
@@ -4237,16 +4237,24 @@ main() {
   # This is idempotent — safe to run on already-fixed wrappers.
   local _wrapper="$PI_AGENT_DIR/bin/helios"
   if [[ -f "$_wrapper" ]]; then
-    # Fix: 'local' outside function crashes bash 4.x (line ~84)
     if grep -q 'local depth="\${_HELIOS_UPDATE_DEPTH' "$_wrapper" 2>/dev/null; then
       sed -i.hotfix 's/local depth="${_HELIOS_UPDATE_DEPTH/depth="${_HELIOS_UPDATE_DEPTH/' "$_wrapper"
       rm -f "${_wrapper}.hotfix" 2>/dev/null
-      info "Patched wrapper: removed 'local' outside function"
     fi
-    # Fix: stale npm error messages
     if grep -q 'npm install -g @helios-agent/cli' "$_wrapper" 2>/dev/null; then
       sed -i.hotfix 's|npm install -g @helios-agent/cli|cd ~/helios-team-installer \&\& bash install.sh|g' "$_wrapper"
       rm -f "${_wrapper}.hotfix" 2>/dev/null
+    fi
+    if ! grep -q 'opt/node@22/bin' "$_wrapper" 2>/dev/null; then
+      python3 - "$_wrapper" << 'HOTFIX_EOF'
+import sys
+f = sys.argv[1]
+c = open(f).read()
+old = '    elif [[ -d "$HOME/.local/node22/bin" ]]; then\n      export PATH="$HOME/.local/node22/bin:$PATH"'
+new = '    elif [[ -d "$HOME/.local/node22/bin" ]]; then\n      export PATH="$HOME/.local/node22/bin:$PATH"\n    elif [[ -d "/opt/homebrew/opt/node@22/bin" ]]; then\n      export PATH="/opt/homebrew/opt/node@22/bin:$PATH"\n    elif [[ -d "/usr/local/opt/node@22/bin" ]]; then\n      export PATH="/usr/local/opt/node@22/bin:$PATH"'
+if old in c:
+    open(f, 'w').write(c.replace(old, new, 1))
+HOTFIX_EOF
     fi
   fi
 
@@ -4526,6 +4534,22 @@ main() {
         error "  Then re-run: bash ~/helios-team-installer/install.sh"
         error "═══════════════════════════════════════════════════════════════════════"
         exit 1
+      fi
+      # Ensure ~/.local/node22/bin sidecar exists — the helios wrapper relies on
+      # this path for runtime Node 22 enforcement regardless of which strategy
+      # succeeded above (brew, nvm, volta, direct download, etc.)
+      if [[ ! -x "$HOME/.local/node22/bin/node" ]]; then
+        local _resolved_node
+        _resolved_node="$(command -v node 2>/dev/null)"
+        if [[ -n "$_resolved_node" ]] && [[ -x "$_resolved_node" ]]; then
+          mkdir -p "$HOME/.local/node22/bin"
+          ln -sfn "$_resolved_node" "$HOME/.local/node22/bin/node"
+          local _resolved_npm; _resolved_npm="$(command -v npm 2>/dev/null)"
+          [[ -x "$_resolved_npm" ]] && ln -sfn "$_resolved_npm" "$HOME/.local/node22/bin/npm"
+          local _resolved_npx; _resolved_npx="$(command -v npx 2>/dev/null)"
+          [[ -x "$_resolved_npx" ]] && ln -sfn "$_resolved_npx" "$HOME/.local/node22/bin/npx"
+          success "Created ~/.local/node22 sidecar for runtime enforcement"
+        fi
       fi
       # Verify architecture matches the native module prebuilds in tarball
       local _node_arch

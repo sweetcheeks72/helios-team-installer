@@ -1776,10 +1776,12 @@ setup_helios_agent() {
       git -C "$PI_AGENT_DIR" init -q 2>/dev/null
       git -C "$PI_AGENT_DIR" config user.email "helios@helios-agi.com" 2>/dev/null
       git -C "$PI_AGENT_DIR" config user.name "Helios" 2>/dev/null
-      echo "tarball" > "$PI_AGENT_DIR/.tarball-marker"
-      git -C "$PI_AGENT_DIR" add .tarball-marker 2>/dev/null
-      git -C "$PI_AGENT_DIR" commit -q -m "tarball install v${remote_version}" 2>/dev/null
+      git -C "$PI_AGENT_DIR" add -A 2>/dev/null
+      git -C "$PI_AGENT_DIR" commit -q -m "tarball install v${remote_version}" --allow-empty 2>/dev/null
       git -C "$PI_AGENT_DIR" branch -M main 2>/dev/null
+    elif [[ -d "$PI_AGENT_DIR/.git" ]] && command -v git &>/dev/null; then
+      git -C "$PI_AGENT_DIR" add -A 2>/dev/null
+      git -C "$PI_AGENT_DIR" commit -q -m "tarball update v${remote_version}" --allow-empty 2>/dev/null
     fi
 
     # Restore user files

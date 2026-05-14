@@ -301,11 +301,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare standalone assets
+        run: |
+          cp bootstrap.sh /tmp/bootstrap.sh
+          cp install.sh /tmp/install.sh
+          if [[ -f /tmp/pkg-arm64/helios/VERSION ]]; then
+            cp /tmp/pkg-arm64/helios/VERSION /tmp/VERSION
+          else
+            echo "${{ steps.resolve.outputs.tag }}" | sed 's/^v//' > /tmp/VERSION
+          fi
+
       - name: Upload assets (clobber existing — atomic from user perspective)
         run: |
           RELEASE_TAG="${{ steps.resolve.outputs.tag }}"
           for f in helios-latest-darwin-arm64.tar.gz helios-latest-darwin-x64.tar.gz helios-latest.tar.gz \
-                   helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256; do
+                   helios-latest-darwin-arm64.tar.gz.sha256 helios-latest-darwin-x64.tar.gz.sha256 helios-latest.tar.gz.sha256 \
+                   bootstrap.sh install.sh VERSION; do
             echo "Uploading $f..."
             gh release upload "$RELEASE_TAG" "/tmp/$f" --repo ${{ github.repository }} --clobber
             sleep 2

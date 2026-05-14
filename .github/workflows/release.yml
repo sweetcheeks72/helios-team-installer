@@ -206,3 +206,25 @@ jobs:
             installer/dist/helios-sbom.spdx.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------------
+      # 7. Trigger upload-assets to build and attach platform packages
+      #    (bootstrap.sh, install.sh, helios-latest-darwin-{arm64,x64}.tar.gz)
+      #    Without this step, the release has only agent tarballs — no installer.
+      # -----------------------------------------------------------------------
+      - name: Trigger upload-assets workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'rebuild-assets',
+              client_payload: {
+                trigger: 'release-created',
+                release_tag: '${{ github.ref_name }}',
+              }
+            });
+            core.info(`Dispatched rebuild-assets for tag ${{ github.ref_name }}`);
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
